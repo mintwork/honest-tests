@@ -82,7 +82,7 @@ describe('honest-tests audit', () => {
     const list = JSON.parse(r.stdout) as Array<{ id: string }>;
     expect(list.map((x) => x.id)).toContain('tautological-assertion');
     expect(list.map((x) => x.id)).toContain('asserts-on-own-literal');
-    expect(list).toHaveLength(13);
+    expect(list).toHaveLength(16);
   });
 });
 

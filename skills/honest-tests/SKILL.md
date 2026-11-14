@@ -84,8 +84,8 @@ The JSON contains `findings[]` with `ruleId`, `severity`, `file`, `line`, `colum
 [references/audit-procedure.md](references/audit-procedure.md#manual-fallback).
 
 Also look for smells the detector does not catch yet (see the "beyond the detector" list in
-[references/test-smells.md](references/test-smells.md)), e.g. expected values copied from output,
-tests that re-implement the algorithm, or assertions on irrelevant details.
+[references/test-smells.md](references/test-smells.md)), e.g. expected values copied from output or
+re-implemented formulas the narrow rules miss, or assertions on irrelevant details.
 
 ### Phase 2 — Verify each finding
 
@@ -138,4 +138,7 @@ without the user's agreement.
 | `excessive-mocking` | warning | 5+ module mocks in one file |
 | `snapshot-only` | warning | The only assertion is a snapshot |
 | `conditional-assertion` | warning | Assertion behind `if`/`&&`/ternary |
+| `reimplemented-algorithm` | warning | Expected value recomputed from the call's own inputs: `expect(total(p, q)).toBe(p * q * 1.2)` |
+| `oracle-copied-from-output` | warning | Expected float carries rounding noise (`2.9000000000000004`) — copied from the code's output |
+| `weak-called-assertion` | info/warning | Bare `toHaveBeenCalled()` on a shared mock whose arguments other tests check |
 | `skipped-test` | warning | `.skip`, `xit`, `xdescribe` |

@@ -197,6 +197,9 @@ References the agent loads on demand: [test smell catalog](skills/honest-tests/r
 | `excessive-mocking` | warning | 5+ module mocks in one file |
 | `snapshot-only` | warning | The only assertion is a snapshot |
 | `conditional-assertion` | warning | Assertion behind `if` / `&&` / ternary |
+| `reimplemented-algorithm` | warning | Expected value recomputed from the call's own inputs: `expect(total(p, q)).toBe(p * q * 1.2)` |
+| `oracle-copied-from-output` | warning | Expected float carries rounding noise (`2.9000000000000004`), so it was copied from the code's output |
+| `weak-called-assertion` | info | Bare `toHaveBeenCalled()` on a shared mock whose arguments other tests check (warning when the test checks nothing else) |
 | `skipped-test` | warning | `.skip`, `xit`, `xdescribe` |
 
 `npx @mintwork/honest-tests rules` prints the list. Suppress a deliberate case with a reason:
@@ -262,7 +265,7 @@ such as early-exit optimizations.
       `TestFileModel` ([src/adapters/python](src/adapters/python/index.ts) documents the mapping)
 - [ ] Parallel mutant runs and per-test coverage mapping (run only tests that execute the mutated line)
 - [ ] SARIF output for GitHub code scanning; `--changed` mode for PR diffs
-- [ ] More rules: oracle copied from output, re-implemented algorithm in test, weak `toHaveBeenCalled()`
+- [x] More rules: oracle copied from output, re-implemented algorithm in test, weak `toHaveBeenCalled()`
 - [ ] Mocha, node:test, Bun, Deno; Go and Rust adapters
 - [ ] GitHub Action with a PR comment: "this PR adds 12 tests, 4 can't fail"
 

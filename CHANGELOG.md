@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Three new rules, tuned for precision on real projects (they miss cases rather than cry wolf):
+  - `reimplemented-algorithm` (warning): the expected value is numeric arithmetic over the call's own
+    inputs, e.g. `expect(total(p, q)).toBe(p * q * 1.2)`.
+  - `oracle-copied-from-output` (warning): the expected value is a float with rounding noise, e.g.
+    `2.9000000000000004`, so it was copied from the code's output.
+  - `weak-called-assertion` (info, or warning when the test checks nothing else): a bare
+    `toHaveBeenCalled()` on a shared mock whose arguments other tests in the file check.
+
 ## [0.1.2] - 2026-11-14
 
 ### Changed
