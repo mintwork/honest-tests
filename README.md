@@ -167,6 +167,27 @@ In CI, check out with enough history for the merge base (`actions/checkout` with
 Upload `--sarif` output with `github/codeql-action/upload-sarif`; run it from the repository root so
 paths line up.
 
+### GitHub Action
+
+Comment on every pull request with what its tests are worth — *"This PR adds 12 tests — 4 can't fail."*:
+
+```yaml
+on: pull_request
+permissions: { contents: read, pull-requests: write }
+jobs:
+  honest-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: mintwork/honest-tests@main   # "Honest Tests Audit"; pin a tag or SHA once released
+```
+
+It audits only the test files the PR changes, updates one comment per PR, writes the job summary and
+fails the step when a test the PR adds or modifies can't fail (`fail-on: error | warning | never`). It
+only parses test files and never runs your code. Code scanning, monorepo and other setups:
+[examples/](examples/README.md).
+
 ---
 
 ## How the skill works
@@ -273,7 +294,7 @@ such as early-exit optimizations.
 - [x] SARIF output for GitHub code scanning; `--changed` mode for PR diffs
 - [ ] More rules: oracle copied from output, re-implemented algorithm in test, weak `toHaveBeenCalled()`
 - [ ] Mocha, node:test, Bun, Deno; Go and Rust adapters
-- [ ] GitHub Action with a PR comment: "this PR adds 12 tests, 4 can't fail"
+- [x] GitHub Action with a PR comment: "this PR adds 12 tests, 4 can't fail"
 
 ## Contributing
 

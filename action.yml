@@ -1,0 +1,107 @@
+name: Honest Tests Audit
+description: Find the tests a pull request adds that can't fail, and say so in a PR comment ("this PR adds 12 tests, 4 can't fail").
+author: mintwork
+branding:
+  icon: check-circle
+  color: green
+
+inputs:
+  base:
+    description: >-
+      Ref or SHA to compare against. Default: the pull request's base commit (pull_request events) or
+      the previous commit (push events).
+    required: false
+    default: ''
+  paths:
+    description: Paths to audit, comma- or newline-separated, relative to working-directory.
+    required: false
+    default: '.'
+  ignore:
+    description: Globs to ignore, comma- or newline-separated (e.g. "fixtures/**").
+    required: false
+    default: ''
+  working-directory:
+    description: Directory to run the audit in (a package in a monorepo). Default: the repository root.
+    required: false
+    default: '.'
+  fail-on:
+    description: >-
+      Fail the step when tests the PR adds or modifies have findings at this level: error, warning or
+      never. Findings in tests the PR didn't touch never fail the step.
+    required: false
+    default: 'error'
+  comment:
+    description: Create or update one PR comment with the result ("true" or "false").
+    required: false
+    default: 'true'
+  sarif-file:
+    description: Also write SARIF 2.1.0 to this path (relative to working-directory), for github/codeql-action/upload-sarif.
+    required: false
+    default: ''
+  github-token:
+    description: Token for the PR comment. Needs pull-requests write permission.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  tests-added:
+    description: Number of tests the change adds.
+    value: ${{ steps.audit.outputs.tests-added }}
+  tests-modified:
+    description: Number of existing tests the change modifies.
+    value: ${{ steps.audit.outputs.tests-modified }}
+  cant-fail-added:
+    description: Added tests with an error-level finding (tests that can't fail).
+    value: ${{ steps.audit.outputs.cant-fail-added }}
+  cant-fail-modified:
+    description: Modified tests with an error-level finding.
+    value: ${{ steps.audit.outputs.cant-fail-modified }}
+  findings:
+    description: Findings in added or modified tests.
+    value: ${{ steps.audit.outputs.findings }}
+  report:
+    description: Path of the JSON report (honest-tests audit --json format, with a "changed" summary).
+    value: ${{ steps.audit.outputs.report }}
+  sarif-file:
+    description: Path of the SARIF file, when sarif-file was set.
+    value: ${{ steps.audit.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check Node.js
+      id: node
+      shell: bash
+      run: |
+        major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+        if [ "$major" -ge 22 ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+
+    - name: Set up Node.js 24 (honest-tests needs Node 22+)
+      if: steps.node.outputs.ok != 'true'
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+
+    # Build honest-tests from this action's own checkout, so the CLI always matches the action's ref.
+    # Install scripts are skipped; only our own build (tsc) runs.
+    - name: Build honest-tests
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        npm ci --no-audit --no-fund --ignore-scripts --loglevel=error
+        npm run build --silent
+
+    # Static analysis only: test files are parsed, never executed.
+    - name: Audit changed tests
+      id: audit
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        HT_BASE: ${{ inputs.base }}
+        HT_PATHS: ${{ inputs.paths }}
+        HT_IGNORE: ${{ inputs.ignore }}
+        HT_FAIL_ON: ${{ inputs.fail-on }}
+        HT_COMMENT: ${{ inputs.comment }}
+        HT_SARIF_FILE: ${{ inputs.sarif-file }}
+        HT_GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/dist/action/main.js"

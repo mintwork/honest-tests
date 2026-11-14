@@ -14,6 +14,10 @@ All notable changes to this project are documented here. The format follows
 - **`audit --changed <ref>`**: audit only the test files changed since the merge base with `<ref>`
   (committed, uncommitted and untracked), and report how many tests the change adds or modifies and
   how many of those can't fail. JSON output gains a `changed` summary and a `change` field on findings.
+- **GitHub Action "Honest Tests Audit"** (`action.yml`): audits the test files a pull request changes
+  and creates or updates one PR comment ("This PR adds 12 tests — 4 can't fail."), writes the job
+  summary, annotates findings, optionally writes SARIF, and fails on findings in added or modified
+  tests (`fail-on`). Static only: it never runs the repository's code. Usage in `examples/`.
 
 ## [0.1.2] - 2026-11-14
 

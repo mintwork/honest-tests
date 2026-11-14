@@ -1,0 +1,32 @@
+# .github/workflows/honest-tests-code-scanning.yml
+# PR comment plus GitHub code scanning alerts (Security → Code scanning, and inline on the PR diff).
+name: Honest tests (code scanning)
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write # PR comment
+  security-events: write # upload SARIF
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: honest
+        uses: mintwork/honest-tests@main # pin a release tag or commit SHA once one is published
+        with:
+          paths: src, test
+          ignore: fixtures/**
+          sarif-file: honest-tests.sarif
+          fail-on: never # report only; let code scanning gate the PR
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always() && steps.honest.outputs.sarif-file != ''
+        with:
+          sarif_file: ${{ steps.honest.outputs.sarif-file }}
+          category: honest-tests
+      - run: echo "added ${{ steps.honest.outputs.tests-added }} tests, ${{ steps.honest.outputs.cant-fail-added }} can't fail"
