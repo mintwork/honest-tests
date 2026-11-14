@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Parallel mutant runs:** `mutate --concurrency <n>` tests mutants in parallel, each worker in its
+  own project copy. The default is half the CPU cores (1–4). The baseline also runs in every copy at
+  once first; if that fails, the run falls back to one worker, so tests that share ports or services
+  can't produce false kills.
+- **Per-test-file coverage map:** with 2+ related test files, each mutant runs only the test files
+  that execute its statement, found by running each file once against a probed copy of the target.
+  Mutants no test executes are reported as survived ("no test executes this line") without a run.
+  `--coverage-map auto|on|off`; JSON reports `concurrency`, `coverageMap`, `notes` and, per mutant,
+  `noCoverage` / `testFiles`.
+
 ## [0.1.2] - 2026-11-14
 
 ### Changed

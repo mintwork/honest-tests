@@ -63,6 +63,14 @@ export function formatMutation(m: MutationReport): string {
   const shown = m.relatedTests.slice(0, 6).join(', ') + (m.relatedTests.length > 6 ? `, … ${m.relatedTests.length - 6} more` : '');
   if (m.relatedTests.length) out.push(c.dim(`  tests:   ${shown}`));
   else out.push(c.yellow('  no test file imports this target (directly or via other modules); ran the full test command'));
+  const cov = m.coverageMap;
+  out.push(
+    c.dim(
+      `  workers: ${m.concurrency}` +
+        (cov.enabled ? ` · coverage map: ${plural(cov.mappedTests, 'test file')} mapped, ${cov.narrowed} of ${m.tested} mutants ran fewer tests` : ''),
+    ),
+  );
+  for (const note of m.notes) out.push(c.yellow(`  ${note}`));
   if (m.generated > m.tested) out.push(c.yellow(`  tested ${m.tested} of ${m.generated} mutants (raise --max-mutants for more)`));
 
   const survivors = m.mutants.filter((x) => x.status === 'survived');
@@ -72,7 +80,7 @@ export function formatMutation(m: MutationReport): string {
     for (const s of survivors) byLine.set(s.line, [...(byLine.get(s.line) ?? []), s]);
     for (const [line, list] of byLine) {
       out.push('', `  ${c.gray(`${m.target}:${line}`)}  ${list[0]!.sourceLine}`);
-      for (const s of list) out.push(`      ${c.red('✗')} ${s.description}`);
+      for (const s of list) out.push(`      ${c.red('✗')} ${s.description}${s.noCoverage ? c.dim(' (no test executes this line)') : ''}`);
     }
   }
   const score = m.score;

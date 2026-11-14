@@ -53,6 +53,10 @@ Mutation options
   --max-mutants <n>      Cap on mutants to run (default 100)
   --timeout <ms>         Per-run timeout (default: 4x baseline + 5s)
   --min-score <0-100>    Exit 1 if mutation score is below this (default: 0, report only)
+  --concurrency <n>      Mutants tested at once, each in its own project copy
+                         (default: half the CPU cores, 1-4; falls back to 1 if the suite isn't parallel-safe)
+  --coverage-map <mode>  auto (default: with 2+ related test files) | on | off. Runs each mutant only
+                         against the related test files that execute its line.
 
 Suppress a finding:   // honest-tests-disable-next-line <rule-id>`;
 
@@ -75,6 +79,8 @@ export async function run(argv: string[], io: IO): Promise<number> {
         'max-mutants': { type: 'string' },
         timeout: { type: 'string' },
         'min-score': { type: 'string' },
+        concurrency: { type: 'string' },
+        'coverage-map': { type: 'string' },
         dir: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean' },
@@ -119,6 +125,16 @@ export async function run(argv: string[], io: IO): Promise<number> {
     return 2;
   }
 
+  const coverageMap = v['coverage-map'] ?? 'auto';
+  if (coverageMap !== 'auto' && coverageMap !== 'on' && coverageMap !== 'off') {
+    io.stderr(`--coverage-map must be auto, on or off.\n`);
+    return 2;
+  }
+  if (v.concurrency !== undefined && !/^[1-9]\d*$/.test(v.concurrency)) {
+    io.stderr(`--concurrency must be a whole number of at least 1.\n`);
+    return 2;
+  }
+
   let auditResult: AuditResult | null = null;
   let exit = 0;
   if (command === 'audit') {
@@ -145,6 +161,8 @@ export async function run(argv: string[], io: IO): Promise<number> {
         testCmd: v['test-cmd'],
         maxMutants: num(v['max-mutants']),
         timeoutMs: num(v.timeout),
+        concurrency: num(v.concurrency),
+        coverageMap,
         onProgress: showProgress
           ? (done, total, r) => io.stderr(`\r  mutating ${target}: ${done}/${total} ${r.status === 'survived' ? c.red('survived') : c.green(r.status)}   `)
           : undefined,

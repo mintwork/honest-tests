@@ -224,14 +224,21 @@ it('loads', () => { require('../src/plugin'); });
 **Safe by design:** the project is copied to a temp dir (`node_modules` symlinked), mutants are written
 only to the copy and restored after every run, and the copy is removed at the end — even on Ctrl-C. A red
 baseline aborts the run. Only test files that import the target — directly or through other local
-modules — are run (vitest/jest), once and with coverage off, so it's fast: 26 mutants in ~12s on the
-fixture. Imports through path aliases (`@/lib/x`) aren't followed yet; pass `--test-cmd` if your tests
-reach the target that way.
+modules — are run (vitest/jest), once and with coverage off. Imports through path aliases (`@/lib/x`)
+aren't followed yet; pass `--test-cmd` if your tests reach the target that way.
+
+**Fast:** mutants run in parallel, each worker in its own copy (default: half the cores, at most 4;
+26 mutants in ~4s on the fixture instead of ~9s). Before trusting parallel runs, the baseline runs in
+every copy at once; if that fails (fixed ports, a shared database), it falls back to one worker, so a
+suite that isn't parallel-safe can't inflate the score. With 2+ related test files, a **coverage map**
+runs each test file once against a probed copy of the target, and each mutant then runs only the test
+files that execute its statement; mutants no test executes are reported without a run.
 
 ```text
 --test-cmd "<cmd>"   custom command; {files} expands to related test files
 --max-mutants <n>    cap (default 100)          --timeout <ms>   per-run timeout
 --min-score <0-100>  exit 1 below this score    --root <dir>     project root
+--concurrency <n>    parallel workers           --coverage-map auto|on|off   (default auto)
 ```
 
 ## CLI reference
@@ -240,6 +247,7 @@ reach the target that way.
 honest-tests audit [paths...]   [--json] [-v] [--ignore <glob>] [--rule <id>] [--disable <id>]
                                 [--fail-on error|warning|never] [--mutate <file> ...]
 honest-tests mutate <file>      [--json] [--test-cmd <cmd>] [--max-mutants <n>] [--min-score <n>]
+                                [--concurrency <n>] [--coverage-map auto|on|off]
 honest-tests rules              [--json]
 honest-tests init <claude|codex|cursor> [--dir <repo>]
 ```
@@ -260,7 +268,7 @@ such as early-exit optimizations.
 
 - [ ] **pytest adapter** — the rule engine is language-neutral; an adapter only has to emit the
       `TestFileModel` ([src/adapters/python](src/adapters/python/index.ts) documents the mapping)
-- [ ] Parallel mutant runs and per-test coverage mapping (run only tests that execute the mutated line)
+- [x] Parallel mutant runs and per-test coverage mapping (run only tests that execute the mutated line)
 - [ ] SARIF output for GitHub code scanning; `--changed` mode for PR diffs
 - [ ] More rules: oracle copied from output, re-implemented algorithm in test, weak `toHaveBeenCalled()`
 - [ ] Mocha, node:test, Bun, Deno; Go and Rust adapters
