@@ -21,7 +21,7 @@ inputs:
     required: false
     default: ''
   working-directory:
-    description: Directory to run the audit in (a package in a monorepo). Default: the repository root.
+    description: 'Directory to run the audit in (a package in a monorepo). Default: the repository root.'
     required: false
     default: '.'
   fail-on:

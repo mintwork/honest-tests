@@ -91,6 +91,11 @@ describe('renderComment', () => {
     expect(clean).not.toContain('| Severity |');
   });
 
+  it('escapes backslashes so they cannot cancel the pipe escaping', () => {
+    const text = renderComment(result([finding({ change: 'added', test: 'ends with \\', message: 'm' })]));
+    expect(text).toContain('| error | added | ends with \\\\ | m `no-assertions` |');
+  });
+
   it('caps the table and points to the full report', () => {
     const many = Array.from({ length: 55 }, (_, i) => finding({ change: 'added', line: i + 1, test: `t${i}` }));
     const text = renderComment(result(many));

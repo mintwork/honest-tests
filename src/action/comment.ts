@@ -32,7 +32,7 @@ function plural(n: number, word: string): string {
 
 /** Make text safe inside a Markdown table cell. */
 function cell(s: string): string {
-  return s.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').replace(/</g, '&lt;');
+  return s.replace(/\\/g, '\\\\').replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').replace(/</g, '&lt;');
 }
 
 function joinPath(prefix: string, file: string): string {
