@@ -70,7 +70,8 @@ equivalent, say so explicitly with a one-line reason — don't write a contrived
 - Target one file at a time: the one you just wrote tests for, or the riskiest module in the audit.
 - Cap long runs with `--max-mutants <n>`; use `--timeout <ms>` for slow suites.
 - Check the `notes` in the report: they say when parallel runs or the coverage map were turned off
-  and why. Use `--coverage-map off` if a test file only passes together with the others.
+  and why. Use `--coverage-map off` if test files share module state (e.g. vitest `isolate: false`), since
+  a file run alone may then reach less code than it does alongside the others.
 - Gate CI with `--min-score 80` (exit 1 below the threshold).
 - A score of 100% does not mean the tests are perfect; it means every simple mutation was caught.
   A low score is very strong evidence that tests are fake.
