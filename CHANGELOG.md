@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **pytest adapter**: `audit` now checks pytest and unittest files (`test_*.py`, `*_test.py`) with every
+  rule. Files are parsed with Python's own `ast` module (`python3 -I -S`, sources sent on stdin, one
+  process per run); the audited code is never imported or executed. It understands `assert`,
+  `pytest.raises`/`warns`, `self.assert*`, `Mock.assert_called_*`, skip markers, `patch`/`mocker.patch`/
+  `patch.object`/`monkeypatch.setattr`, `Mock(return_value=...)`, syrupy and pytest-regressions
+  snapshots, and asserting helpers in `conftest.py` and other test-support files. Python-specific
+  catches: tuple asserts (`assert (x, "msg")`) and fake Mock assertions (`assert m.called_once_with()`).
+  Needs Python 3.9+; without it, Python files are listed as unsupported with the reason.
+- Adapters can parse files in batches (`LanguageAdapter.parseTestFiles`), and `ModuleMock.scope` limits
+  a mock to one test, so `excessive-mocking` counts pytest patches per test.
+
 ## [0.1.2] - 2026-11-14
 
 ### Changed

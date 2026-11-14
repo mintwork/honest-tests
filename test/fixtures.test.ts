@@ -67,9 +67,9 @@ describe('fixture: good-project (honest tests)', () => {
 });
 
 describe('discovery', () => {
-  it('honors --ignore globs and reports planned languages instead of silently skipping them', () => {
-    const result = audit({ paths: ['fixtures'], cwd: ROOT, ignore: ['fixtures/bad-project/**'] });
+  it('honors --ignore globs', () => {
+    const result = audit({ paths: ['fixtures'], cwd: ROOT, ignore: ['fixtures/bad-project/**', '**/bad'] });
     expect(result.findings).toEqual([]);
-    expect(result.unsupported).toEqual([{ file: 'fixtures/python-project/tests/test_pricing.py', language: 'python' }]);
+    expect(result.filesScanned).toBe(3);
   });
 });

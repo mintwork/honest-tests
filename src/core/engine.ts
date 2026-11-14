@@ -1,8 +1,9 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { adapterFor } from '../adapters/index.js';
+import { AdapterUnavailableError } from './errors.js';
 import { rules as allRules } from '../rules/index.js';
-import type { Finding, Rule, Severity, TestFileModel } from './types.js';
+import type { Finding, LanguageAdapter, Rule, Severity, TestFileModel } from './types.js';
 
 export const DEFAULT_IGNORED_DIRS = new Set([
   'node_modules',
@@ -39,8 +40,8 @@ export interface AuditResult {
   filesScanned: number;
   testsScanned: number;
   findings: Finding[];
-  /** Test files found for languages whose adapter is still planned (e.g. pytest). */
-  unsupported: Array<{ file: string; language: string }>;
+  /** Test files found for languages whose adapter is planned or can't run here (`reason` says why). */
+  unsupported: Array<{ file: string; language: string; reason?: string }>;
   parseErrors: Array<{ file: string; message: string }>;
   summary: {
     error: number;
@@ -188,16 +189,44 @@ export function audit(opts: AuditOptions, version = '0.0.0'): AuditResult {
   let testsScanned = 0;
   let filesScanned = 0;
 
+  // Adapters that parse in batches (pytest: one Python process) go first.
+  const batched = new Map<string, TestFileModel | Error>();
+  const unavailable = new Map<string, string>();
+  const byAdapter = new Map<LanguageAdapter, string[]>();
+  for (const abs of files) {
+    const adapter = adapterFor(abs)!;
+    if (adapter.parseTestFiles && !adapter.planned) byAdapter.set(adapter, [...(byAdapter.get(adapter) ?? []), abs]);
+  }
+  for (const [adapter, list] of byAdapter) {
+    const inputs: Array<{ path: string; source: string }> = [];
+    for (const abs of list) {
+      try {
+        inputs.push({ path: abs, source: readFileSync(abs, 'utf8') });
+      } catch (e) {
+        batched.set(abs, e as Error);
+      }
+    }
+    try {
+      adapter.parseTestFiles!(inputs).forEach((m, i) => batched.set(inputs[i]!.path, m));
+    } catch (e) {
+      if (!(e instanceof AdapterUnavailableError)) throw e;
+      unavailable.set(adapter.id, e.message);
+    }
+  }
+
   for (const abs of files) {
     const adapter = adapterFor(abs)!;
     const display = displayPath(cwd, abs);
-    if (adapter.planned) {
-      unsupported.push({ file: display, language: adapter.id });
+    if (adapter.planned || unavailable.has(adapter.id)) {
+      const reason = unavailable.get(adapter.id);
+      unsupported.push({ file: display, language: adapter.id, ...(reason ? { reason } : {}) });
       continue;
     }
     let model: TestFileModel;
     try {
-      model = adapter.parseTestFile(abs, readFileSync(abs, 'utf8'));
+      const pre = batched.get(abs);
+      if (pre instanceof Error) throw pre;
+      model = pre ?? adapter.parseTestFile(abs, readFileSync(abs, 'utf8'));
     } catch (e) {
       parseErrors.push({ file: display, message: (e as Error).message });
       continue;

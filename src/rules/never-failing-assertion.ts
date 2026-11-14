@@ -33,11 +33,11 @@ export const neverFailingAssertion: Rule = {
         if (!s || a.negated) continue;
         if (a.matcherKind === 'defined' && ALWAYS_DEFINED.has(s.kind)) {
           out.push(atAssertion(t, a, `${code(s.text)} is always defined — this assertion can never fail.`));
-        } else if (a.matcherKind === 'truthy' && ALWAYS_TRUTHY.has(s.kind)) {
+        } else if (a.matcherKind === 'truthy' && (ALWAYS_TRUTHY.has(s.kind) || s.alwaysTruthy)) {
           out.push(atAssertion(t, a, `${code(s.text)} is always truthy — this assertion can never fail.`));
         } else if (
           (a.matcherKind === 'compare-gte' || a.matcherKind === 'compare-other') &&
-          /\.(length|size)$/.test(s.text) &&
+          (/\.(length|size)$/.test(s.text) || /^len\(.+\)$/.test(s.text)) &&
           a.args[0] &&
           ((a.matcherKind === 'compare-gte' && a.args[0].literalValue === 0) ||
             (a.matcher === 'toBeGreaterThan' && typeof a.args[0].literalValue === 'number' && a.args[0].literalValue < 0))

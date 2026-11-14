@@ -12,7 +12,7 @@ npm run dogfood    # honest-tests must report zero findings on its own tests
 npm run demo:gif   # re-render docs/demo.gif from the real CLI output (Playwright + Google Chrome + ffmpeg)
 ```
 
-Node 22+. Runtime dependencies are deliberately minimal (`@babel/parser` only) — please don't add more
+Node 22+, and Python 3.9+ for the pytest adapter tests. Runtime dependencies are deliberately minimal (`@babel/parser` only) — please don't add more
 without discussion.
 
 ## Layout
@@ -21,14 +21,14 @@ without discussion.
 src/core/types.ts        language-neutral TestFileModel, Rule, Finding, Mutant, LanguageAdapter
 src/core/engine.ts       file discovery, rule execution, suppression comments
 src/adapters/js/         JS/TS parser (babel) -> TestFileModel, mutant generator
-src/adapters/python/     pytest adapter seam (planned)
+src/adapters/python/     pytest adapter: extract.py (stdlib ast, run as python3 -I -S) -> TestFileModel
 src/rules/               one file per rule; rules only read the TestFileModel
 src/mutate/runner.ts     temp-copy mutation runner
 src/report/              human + JSON output
 skills/honest-tests/     the Agent Skill (SKILL.md + references/)
 commands/                Claude Code plugin slash commands
 integrations/            Codex AGENTS.md snippet, Cursor rule
-fixtures/                bad-project (fake tests), good-project (honest tests), python-project
+fixtures/                bad-project (fake tests), good-project (honest tests), python-project (pytest bad/good)
 ```
 
 ## Adding a rule
@@ -51,7 +51,8 @@ When in doubt, make it a `warning`.
 
 Implement `LanguageAdapter` (`src/core/types.ts`): `isTestFile`, `parseTestFile` → `TestFileModel`,
 and optionally `generateMutants`, `testImportsTarget`, `defaultTestCommand`. Register it in
-`src/adapters/index.ts`. See `src/adapters/python/index.ts` for the pytest mapping plan.
+`src/adapters/index.ts`. `src/adapters/python/` shows an adapter that parses with the language's own
+parser in a subprocess (and in batches, via `parseTestFiles`).
 
 ## Commits & PRs
 

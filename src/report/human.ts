@@ -26,7 +26,7 @@ export function formatAudit(r: AuditResult, opts: { verbose?: boolean } = {}): s
     if (opts.verbose) out.push(`          ${c.gray('└')} ${c.green('fix:')} ${f.fix}`);
   }
   for (const u of r.unsupported) {
-    out.push(c.gray(`  skipped ${u.file} (${u.language} support is on the roadmap)`));
+    out.push(c.gray(`  skipped ${u.file} (${u.reason ? `${u.language} support ${u.reason}` : `${u.language} support is on the roadmap`})`));
   }
   for (const p of r.parseErrors) {
     out.push(c.yellow(`  could not parse ${p.file}: ${p.message}`));
@@ -38,8 +38,8 @@ export function formatAudit(r: AuditResult, opts: { verbose?: boolean } = {}): s
     // "✓ 0 tests: no fake tests found" reads as a pass; it's really "nothing was checked".
     out.push(
       c.yellow(
-        'No test files found. honest-tests looks for *.test.* / *.spec.* / test.* files and __tests__/ dirs ' +
-          '(vitest, jest, node:test, mocha-style it/describe). Pass test files or directories explicitly if yours are named differently.',
+        'No test files found. honest-tests looks for *.test.* / *.spec.* / test.* files, __tests__/ dirs and test_*.py / *_test.py ' +
+          '(vitest, jest, node:test, mocha-style it/describe, pytest). Pass test files or directories explicitly if yours are named differently.',
       ),
     );
   } else if (r.findings.length === 0) {

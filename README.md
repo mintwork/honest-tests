@@ -199,6 +199,14 @@ References the agent loads on demand: [test smell catalog](skills/honest-tests/r
 | `conditional-assertion` | warning | Assertion behind `if` / `&&` / ternary |
 | `skipped-test` | warning | `.skip`, `xit`, `xdescribe` |
 
+Every rule also runs on **pytest** files (`test_*.py`, `*_test.py`): `assert` statements,
+`pytest.raises`, `unittest` `self.assert*`, `Mock.assert_called_*`, `@pytest.mark.skip`, `patch` /
+`mocker.patch` / `monkeypatch.setattr` and syrupy snapshots map onto the same model. Python-only catches
+include `assert (x == 1, "msg")` (a tuple is always truthy) and `assert m.called_once_with(1)` (not a
+Mock assertion; it returns a truthy child mock). Files are parsed by Python's own `ast` module, so
+`python3` (3.9+) must be on `PATH` (or set `HONEST_TESTS_PYTHON`); the audited code is never imported or
+run. Mutation testing is JS/TS only for now.
+
 `npx @mintwork/honest-tests rules` prints the list. Suppress a deliberate case with a reason:
 
 ```ts
@@ -258,8 +266,7 @@ such as early-exit optimizations.
 
 ## Roadmap
 
-- [ ] **pytest adapter** — the rule engine is language-neutral; an adapter only has to emit the
-      `TestFileModel` ([src/adapters/python](src/adapters/python/index.ts) documents the mapping)
+- [x] **pytest adapter** — audit pytest/unittest files with every rule ([src/adapters/python](src/adapters/python/index.ts)); Python mutation testing is next
 - [ ] Parallel mutant runs and per-test coverage mapping (run only tests that execute the mutated line)
 - [ ] SARIF output for GitHub code scanning; `--changed` mode for PR diffs
 - [ ] More rules: oracle copied from output, re-implemented algorithm in test, weak `toHaveBeenCalled()`
@@ -268,7 +275,7 @@ such as early-exit optimizations.
 
 ## Contributing
 
-PRs welcome — especially new rules with a bad/good fixture and pytest adapter work. See
+PRs welcome — especially new rules with a bad/good fixture and Python mutation support. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License

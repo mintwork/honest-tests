@@ -125,6 +125,12 @@ expect(items.length).toBeGreaterThanOrEqual(0);   // lengths are never negative
 expect(new Cart()).toBeDefined();                 // constructors always return
 ```
 
+```python
+assert (total(cart) == 30, "total is 30")         # a non-empty tuple is always truthy
+assert notify.called_once_with("sent")            # not a Mock assertion: returns a truthy child mock
+assert len(items) >= 0                            # lengths are never negative
+```
+
 **Why it's fake:** structurally unable to fail.
 
 **Honest:** call the matcher, `await` async matchers, assert the exact value

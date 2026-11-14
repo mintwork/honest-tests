@@ -88,7 +88,7 @@ describe('mutate() on fixture projects', { timeout: 180_000 }, () => {
   });
 
   it('rejects unsupported targets', async () => {
-    const target = 'fixtures/python-project/tests/test_pricing.py';
+    const target = 'fixtures/python-project/app/pricing.py'; // Python mutation is not implemented yet
     expect(existsSync(resolve(ROOT, target))).toBe(true);
     await expect(mutate({ target, cwd: ROOT })).rejects.toThrow('not supported');
   });
