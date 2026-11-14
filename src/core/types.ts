@@ -174,6 +174,8 @@ export interface Finding {
   test?: string;
   /** Short actionable advice. */
   fix: string;
+  /** `--changed` audits: the finding is in a test (or line) the change set adds or modifies. */
+  change?: 'added' | 'modified';
 }
 
 /** What a rule returns; the engine fills in ruleId/file/defaults. */

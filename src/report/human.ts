@@ -21,7 +21,8 @@ export function formatAudit(r: AuditResult, opts: { verbose?: boolean } = {}): s
       currentFile = f.file;
       out.push('', c.bold(c.cyan(f.file)));
     }
-    out.push(`  ${c.gray(`${f.line}:${f.column}`.padEnd(7))} ${SEV[f.severity](f.severity.padEnd(7))} ${f.message} ${c.dim(f.ruleId)}`);
+    const tag = f.change ? c.magenta(`[${f.change}] `) : '';
+    out.push(`  ${c.gray(`${f.line}:${f.column}`.padEnd(7))} ${SEV[f.severity](f.severity.padEnd(7))} ${tag}${f.message} ${c.dim(f.ruleId)}`);
     out.push(`          ${c.gray('│')} ${c.dim(f.evidence)}`);
     if (opts.verbose) out.push(`          ${c.gray('└')} ${c.green('fix:')} ${f.fix}`);
   }
@@ -34,6 +35,21 @@ export function formatAudit(r: AuditResult, opts: { verbose?: boolean } = {}): s
 
   out.push('');
   const { error, warning, suspiciousTests } = r.summary;
+  const ch = r.changed;
+  if (ch) {
+    const since = `since ${ch.base} (merge base ${ch.mergeBase.slice(0, 7)})`;
+    if (ch.testFiles.length === 0 && r.parseErrors.length === 0) {
+      out.push(c.green(`✓ No test files changed ${since}.`));
+      return out.join('\n').replace(/^\n/, '');
+    }
+    out.push(
+      c.bold(`Changed ${since}: ${plural(ch.testFiles.length, 'test file')}, ${plural(ch.testsAdded, 'test')} added, ${ch.testsModified} modified.`),
+    );
+    if (ch.suspiciousAdded + ch.suspiciousModified > 0) {
+      const parts = [ch.suspiciousAdded ? `${c.red(String(ch.suspiciousAdded))} of ${ch.testsAdded} added` : '', ch.suspiciousModified ? `${c.red(String(ch.suspiciousModified))} of ${ch.testsModified} modified` : ''].filter(Boolean);
+      out.push(c.bold(`${parts.join(' and ')} tests can't fail.`));
+    }
+  }
   if (r.filesScanned === 0 && r.parseErrors.length === 0) {
     // "✓ 0 tests: no fake tests found" reads as a pass; it's really "nothing was checked".
     out.push(

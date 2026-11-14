@@ -1,7 +1,8 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { adapterFor } from '../adapters/index.js';
 import { rules as allRules } from '../rules/index.js';
+import { changeKind, type ChangedFiles } from './git.js';
 import type { Finding, Rule, Severity, TestFileModel } from './types.js';
 
 export const DEFAULT_IGNORED_DIRS = new Set([
@@ -30,6 +31,22 @@ export interface AuditOptions {
   only?: string[];
   /** Exclude these rule ids. */
   disable?: string[];
+  /** Only audit test files in this change set (`--changed <ref>`), and say which tests it adds or modifies. */
+  changed?: ChangedFiles;
+}
+
+/** What a `--changed` audit covered: the change set and its tests. */
+export interface ChangeSummary {
+  base: string;
+  mergeBase: string;
+  /** Changed test files that were audited. */
+  testFiles: string[];
+  /** Tests whose `it(`/`test(` line is new, and tests with other changed lines. */
+  testsAdded: number;
+  testsModified: number;
+  /** Of those, how many have an error-level finding (the "can't fail" count). */
+  suspiciousAdded: number;
+  suspiciousModified: number;
 }
 
 export interface AuditResult {
@@ -42,6 +59,8 @@ export interface AuditResult {
   /** Test files found for languages whose adapter is still planned (e.g. pytest). */
   unsupported: Array<{ file: string; language: string }>;
   parseErrors: Array<{ file: string; message: string }>;
+  /** Present for `--changed` audits. */
+  changed?: ChangeSummary;
   summary: {
     error: number;
     warning: number;
@@ -176,12 +195,29 @@ export function auditSource(path: string, source: string, opts: Pick<AuditOption
   return runRules(adapter.parseTestFile(path, source), selectRules(opts), path);
 }
 
+/** git reports real paths; `/tmp` vs `/private/tmp` (macOS) must still match. */
+function realPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+function testKey(file: string, name: string, line: number): string {
+  return `${file}::${line}::${name}`;
+}
+
 const SEVERITY_ORDER: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
 
 export function audit(opts: AuditOptions, version = '0.0.0'): AuditResult {
   const cwd = resolve(opts.cwd ?? process.cwd());
-  const files = discoverTestFiles(opts.paths.length ? opts.paths : ['.'], cwd, opts.ignore);
+  let files = discoverTestFiles(opts.paths.length ? opts.paths : ['.'], cwd, opts.ignore);
+  const changed = opts.changed;
+  if (changed) files = files.filter((f) => changed.files.has(realPath(f)));
   const rules = selectRules(opts);
+  const changedTests = new Map<string, 'added' | 'modified'>();
+  const changedFiles: string[] = [];
   const findings: Finding[] = [];
   const unsupported: AuditResult['unsupported'] = [];
   const parseErrors: AuditResult['parseErrors'] = [];
@@ -204,7 +240,23 @@ export function audit(opts: AuditOptions, version = '0.0.0'): AuditResult {
     }
     filesScanned++;
     testsScanned += model.tests.filter((t) => t.kind === 'test').length;
-    findings.push(...runRules(model, rules, display));
+    const fileFindings = runRules(model, rules, display);
+    if (changed) {
+      changedFiles.push(display);
+      const lines = changed.files.get(realPath(abs));
+      for (const t of model.tests) {
+        if (t.kind !== 'test') continue;
+        const kind = changeKind(lines, t.line, t.endLine);
+        if (kind) changedTests.set(testKey(display, t.name, t.line), kind);
+      }
+      for (const f of fileFindings) {
+        // The innermost test containing the finding decides; file-level findings go by their own line.
+        const owner = f.test === undefined ? undefined : model.tests.filter((t) => t.kind === 'test' && t.name === f.test && t.line <= f.line && f.line <= t.endLine).at(-1);
+        const kind = owner ? changedTests.get(testKey(display, owner.name, owner.line)) : changeKind(lines, f.line, f.line);
+        if (kind) f.change = kind;
+      }
+    }
+    findings.push(...fileFindings);
   }
 
   findings.sort(
@@ -214,6 +266,9 @@ export function audit(opts: AuditOptions, version = '0.0.0'): AuditResult {
   const suspicious = new Set(
     findings.filter((f) => f.severity === 'error' && f.test && f.ruleId !== 'focused-test').map((f) => `${f.file}::${f.test}`),
   );
+  const suspiciousBy = (kind: 'added' | 'modified') =>
+    new Set(findings.filter((f) => f.severity === 'error' && f.test && f.ruleId !== 'focused-test' && f.change === kind).map((f) => `${f.file}::${f.test}`)).size;
+  const countTests = (kind: 'added' | 'modified') => [...changedTests.values()].filter((k) => k === kind).length;
   return {
     tool: 'honest-tests',
     version,
@@ -223,6 +278,19 @@ export function audit(opts: AuditOptions, version = '0.0.0'): AuditResult {
     findings,
     unsupported,
     parseErrors,
+    ...(changed
+      ? {
+          changed: {
+            base: changed.base,
+            mergeBase: changed.mergeBase,
+            testFiles: changedFiles,
+            testsAdded: countTests('added'),
+            testsModified: countTests('modified'),
+            suspiciousAdded: suspiciousBy('added'),
+            suspiciousModified: suspiciousBy('modified'),
+          },
+        }
+      : {}),
     summary: {
       error: findings.filter((f) => f.severity === 'error').length,
       warning: findings.filter((f) => f.severity === 'warning').length,

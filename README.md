@@ -155,8 +155,17 @@ npx @mintwork/honest-tests init cursor     # writes .cursor/rules/honest-tests.m
 
 ```bash
 npx @mintwork/honest-tests audit . --json                 # machine-readable findings
+npx @mintwork/honest-tests audit . --sarif > ht.sarif     # SARIF 2.1.0 for GitHub code scanning
+npx @mintwork/honest-tests audit . --changed origin/main  # only test files this branch changed
 npx @mintwork/honest-tests mutate src/x.ts --min-score 80 # fail CI below 80% mutation score
 ```
+
+`--changed <ref>` audits the test files changed since the merge base with `<ref>`, including
+uncommitted and untracked files, and reports how many tests the change adds or modifies and how many
+of those can't fail (`changed` in the JSON; findings in changed tests carry `change: "added" | "modified"`).
+In CI, check out with enough history for the merge base (`actions/checkout` with `fetch-depth: 0`).
+Upload `--sarif` output with `github/codeql-action/upload-sarif`; run it from the repository root so
+paths line up.
 
 ---
 
@@ -237,9 +246,9 @@ reach the target that way.
 ## CLI reference
 
 ```text
-honest-tests audit [paths...]   [--json] [-v] [--ignore <glob>] [--rule <id>] [--disable <id>]
-                                [--fail-on error|warning|never] [--mutate <file> ...]
-honest-tests mutate <file>      [--json] [--test-cmd <cmd>] [--max-mutants <n>] [--min-score <n>]
+honest-tests audit [paths...]   [--json | --sarif] [-v] [--ignore <glob>] [--rule <id>] [--disable <id>]
+                                [--changed <ref>] [--fail-on error|warning|never] [--mutate <file> ...]
+honest-tests mutate <file>      [--json | --sarif] [--test-cmd <cmd>] [--max-mutants <n>] [--min-score <n>]
 honest-tests rules              [--json]
 honest-tests init <claude|codex|cursor> [--dir <repo>]
 ```
@@ -261,7 +270,7 @@ such as early-exit optimizations.
 - [ ] **pytest adapter** — the rule engine is language-neutral; an adapter only has to emit the
       `TestFileModel` ([src/adapters/python](src/adapters/python/index.ts) documents the mapping)
 - [ ] Parallel mutant runs and per-test coverage mapping (run only tests that execute the mutated line)
-- [ ] SARIF output for GitHub code scanning; `--changed` mode for PR diffs
+- [x] SARIF output for GitHub code scanning; `--changed` mode for PR diffs
 - [ ] More rules: oracle copied from output, re-implemented algorithm in test, weak `toHaveBeenCalled()`
 - [ ] Mocha, node:test, Bun, Deno; Go and Rust adapters
 - [ ] GitHub Action with a PR comment: "this PR adds 12 tests, 4 can't fail"

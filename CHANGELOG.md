@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`--sarif`**: SARIF 2.1.0 output for GitHub code scanning (`github/codeql-action/upload-sarif`).
+  Findings become results linked to their rule; with `--mutate` or `mutate`, surviving mutants are
+  reported as `surviving-mutant` warnings at the mutated line.
+- **`audit --changed <ref>`**: audit only the test files changed since the merge base with `<ref>`
+  (committed, uncommitted and untracked), and report how many tests the change adds or modifies and
+  how many of those can't fail. JSON output gains a `changed` summary and a `change` field on findings.
+
 ## [0.1.2] - 2026-11-14
 
 ### Changed
