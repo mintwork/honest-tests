@@ -127,6 +127,8 @@ async function main(): Promise<number> {
     log('error', `Could not compute the changed files: ${(e as Error).message}`);
     return 2;
   }
+  // Show (and suggest reproducing with) the branch name rather than the base commit's SHA.
+  if (!input('BASE') && event.pull_request?.base.ref) changed = { ...changed, base: `origin/${event.pull_request.base.ref}` };
   const paths = list(input('PATHS') || '.');
   const result = audit({ paths, cwd, ignore: list(input('IGNORE')), changed }, version());
 

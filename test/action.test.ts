@@ -191,6 +191,7 @@ describe('dist/action/main.js (the action entry point)', () => {
       expect(JSON.parse(readFileSync(outputs.report!, 'utf8')).changed.testFiles).toEqual(['test/new.test.ts']);
       expect(JSON.parse(readFileSync(join(repo, 'out.sarif'), 'utf8')).runs[0].results).toHaveLength(1);
       expect(readFileSync(summary, 'utf8')).toContain('[`test/new.test.ts:2`](https://github.com/o/r/blob/cafe/test/new.test.ts#L2)');
+      expect(readFileSync(summary, 'utf8')).toContain('against `origin/main`');
 
       // fail-on never: same report, green step
       const never = spawnSync(process.execPath, [resolve(__dirname, '..', 'dist/action/main.js')], {
