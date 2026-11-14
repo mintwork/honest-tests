@@ -76,6 +76,8 @@ export interface AssertionContext {
    * Lets rules excuse type-narrowing guards whose condition was already asserted.
    */
   guards?: string[];
+  /** Inside a function nested in the test body (an event handler, a `.then` callback). */
+  inCallback?: boolean;
 }
 
 export interface Assertion {
@@ -217,6 +219,11 @@ export interface LanguageAdapter {
   extensions: string[];
   /** True if `path` looks like a test file for this language. */
   isTestFile(path: string): boolean;
+  /**
+   * True if `path` may be a test file by location alone (`test/foo.js`, `test-foo.js`): it is audited
+   * only when it turns out to contain tests, and parse errors in it are ignored.
+   */
+  isCandidateTestFile?(path: string): boolean;
   /** Parse a test file into the language-neutral model. */
   parseTestFile(path: string, source: string): TestFileModel;
   /** Generate mutants for a source (non-test) file. Optional. */

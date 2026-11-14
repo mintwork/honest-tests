@@ -1,6 +1,6 @@
 ---
 name: honest-tests
-description: Write and audit tests that actually verify behavior instead of tests that merely pass. Use when writing, generating, reviewing or fixing unit tests (vitest, jest; pytest planned), when asked to "add tests", "increase coverage", "audit/review the tests", or before claiming a change is tested. Detects fake tests (tautological assertions, no assertions, asserting on mocks you configured or on literals the test just built, mocking the unit under test, snapshot-only tests, try/catch that swallows failures, assertions that can never fail, leftover .only/.skip) and proves weak tests with lightweight mutation testing via the `honest-tests` CLI.
+description: Write and audit tests that actually verify behavior instead of tests that merely pass. Use when writing, generating, reviewing or fixing unit tests (vitest, jest, mocha, node:test, bun, deno; pytest planned), when asked to "add tests", "increase coverage", "audit/review the tests", or before claiming a change is tested. Detects fake tests (tautological assertions, no assertions, asserting on mocks you configured or on literals the test just built, mocking the unit under test, snapshot-only tests, try/catch that swallows failures, assertions that can never fail, leftover .only/.skip) and proves weak tests with lightweight mutation testing via the `honest-tests` CLI.
 license: MIT
 metadata:
   version: "0.1.2"

@@ -25,7 +25,9 @@ it('takes 10% off', () => {
 
 **Verify:** look for assertions hidden in helpers the detector didn't recognize. Calls named
 `expect*`, `assert*`, `verify*`, `check*`, `ensure*`, `should*`, `validate*`, and `.expect(...)` (supertest)
-already count. If the test genuinely asserts "does not throw", rewrite it as
+already count, as do node:test `t.assert.*`, tap/tspl-style `t.equal(...)`, Deno `@std/assert`, a `done`
+callback the code calls back (`bus.on('x', () => done())`), and `t.plan(n)` / `expect.assertions(n)`.
+If the test genuinely asserts "does not throw", rewrite it as
 `expect(() => fn()).not.toThrow()` so the intent is explicit.
 
 ---

@@ -38,8 +38,8 @@ export function formatAudit(r: AuditResult, opts: { verbose?: boolean } = {}): s
     // "✓ 0 tests: no fake tests found" reads as a pass; it's really "nothing was checked".
     out.push(
       c.yellow(
-        'No test files found. honest-tests looks for *.test.* / *.spec.* / test.* files and __tests__/ dirs ' +
-          '(vitest, jest, node:test, mocha-style it/describe). Pass test files or directories explicitly if yours are named differently.',
+        'No test files found. honest-tests looks for *.test.* / *.spec.* / *_test.* / test.* files, __tests__/ dirs, ' +
+          'and test files under test/ (vitest, jest, mocha, node:test, bun, deno). Pass test files or directories explicitly if yours are named differently.',
       ),
     );
   } else if (r.findings.length === 0) {

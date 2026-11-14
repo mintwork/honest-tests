@@ -20,7 +20,8 @@ npx @mintwork/honest-tests audit test/ --mutate src/pricing.ts --json   # both, 
    - tests hang past the timeout → **timeout** (counted as killed)
 5. Reports the mutation score = (killed + timeout) / tested, and every survivor with its line.
 
-Default test command: the package's `test` script, scoped to the related test files for vitest/jest
+Default test command: the package's `test` script (or the `deno.json` `test` task), scoped to the related
+test files for vitest, jest, mocha, `node --test`, `bun test` and `deno test`
 (`npm test --silent -- test/pricing.test.ts`). Override with `--test-cmd "pnpm vitest run {files}"`;
 `{files}` expands to the related test files.
 

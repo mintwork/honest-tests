@@ -45,7 +45,15 @@ const TEST_MEMBER_MODS = new Set([
   'runIf',
   'for',
   'shuffle',
+  // bun:test
+  'if',
+  'todoIf',
+  'serial',
+  // Deno.test.ignore
+  'ignore',
 ]);
+/** Curried forms: `it.each(table)(name, fn)`, `test.skipIf(c)(name, fn)`, bun's `test.if(c)(name, fn)`. */
+const CURRIED_MODS = new Set(['each', 'skipIf', 'runIf', 'for', 'if', 'todoIf']);
 const CHAI_WORDS = new Set([
   'to',
   'be',
@@ -77,8 +85,13 @@ const MOCK_CONFIG = /^(mockReturnValue|mockReturnValueOnce|mockResolvedValue|moc
 const MODULE_MOCK_FNS = new Set(['mock', 'doMock', 'unstable_mockModule']);
 const HELPER_ASSERT = /^(expect|assert|verify|check|ensure|should|validate)([A-Z_]|$)/;
 const FAIL_CALLS = new Set(['fail', 'expect.fail', 'assert.fail', 'chai.assert.fail']);
+/** Test-context fail calls: `t.fail()`, `t.assert.fail()` (node:test), `p.fail()` (tspl), `done.fail()`. */
+const CTX_FAIL = /^[\w$]+(\.assert)?\.fail$/;
 /** Modules whose exports are assertion functions: `import { equal } from 'node:assert'`. */
-const ASSERT_MODULES = /^((node:)?assert(\/strict)?|chai|uvu\/assert|power-assert|tap|tape)$/;
+const ASSERT_MODULES =
+  /^((node:)?assert(\/strict)?|chai|uvu\/assert|power-assert|tap|tape|((jsr:|npm:)?@std\/(assert|testing\/(asserts|snapshot))(@[^/]+)?(\/[\w.-]+)*)|https?:\/\/deno\.land\/(x\/)?std(@[^/]+)?\/(assert|testing)\/[\w./-]+)$/;
+/** Modules whose `mock` / `spyOn` exports create mocks (`import { mock, spyOn } from 'bun:test'`). */
+const MOCK_MODULES = /^(bun:test|node:test)$/;
 /** `expect.<x>(...)` entry points that start a matcher chain like `expect(...)` does. */
 const EXPECT_ENTRY_PROPS = new Set(['soft', 'poll', 'element']);
 /** Jasmine-style globals that are often also ordinary local names (`fit()` a text, `context`). */
@@ -87,10 +100,20 @@ const SHADOWABLE_TEST_BASES = new Set(['fit', 'xit', 'xtest', 'fdescribe', 'xdes
 const MOCK_RESTORE = /^(mockRestore|mockReset)$/;
 
 const MATCHER_KINDS: Array<[RegExp, MatcherKind]> = [
-  [/^(toMatchSnapshot|toMatchInlineSnapshot|toMatchFileSnapshot|toThrowErrorMatchingSnapshot|toThrowErrorMatchingInlineSnapshot|matchSnapshot)$/, 'snapshot'],
+  [/^(toMatchSnapshot|toMatchInlineSnapshot|toMatchFileSnapshot|toThrowErrorMatchingSnapshot|toThrowErrorMatchingInlineSnapshot|matchSnapshot|snapshot|fileSnapshot|assertSnapshot|assertInlineSnapshot)$/, 'snapshot'],
+  // Deno @std/assert
+  [/^(assertEquals|assertStrictEquals|assertNotEquals|assertNotStrictEquals|assertAlmostEquals|assertObjectMatch)$/, 'equal'],
+  [/^assertFalse$/, 'falsy'],
+  [/^assertExists$/, 'defined'],
+  [/^(assertThrows|assertRejects|assertIsError)$/, 'throws'],
+  [/^(assertInstanceOf|assertNotInstanceOf)$/, 'type'],
+  [/^assertGreaterOrEqual$/, 'compare-gte'],
+  [/^(assertGreater|assertLess|assertLessOrEqual)$/, 'compare-other'],
   [/^(toBe|toEqual|toStrictEqual|toMatchObject|equal|equals|eq|eql|strictEqual|deepEqual|deepStrictEqual|notEqual|notStrictEqual|notDeepEqual|notDeepStrictEqual|toBeCloseTo|closeTo|sameMembers|members|true|false)$/, 'equal'],
-  [/^(toBeTruthy|ok|isOk|isTrue|assert)$/, 'truthy'],
-  [/^(toBeFalsy|notOk|isNotOk|isFalse)$/, 'falsy'],
+  [/^(toBeTruthy|ok|isOk|isTrue|assert|truthy)$/, 'truthy'],
+  [/^(toBeFalsy|notOk|isNotOk|isFalse|falsy)$/, 'falsy'],
+  // tap / ava / tspl context assertions
+  [/^(same|notSame|strictSame|strictNotSame|is|not)$/, 'equal'],
   [/^(toBeDefined|exist|exists|isDefined|isNotUndefined)$/, 'defined'],
   [/^(toBeUndefined|undefined|isUndefined)$/, 'undefined'],
   [/^(toBeNull|null|isNull)$/, 'null'],
@@ -112,18 +135,78 @@ interface TestCallInfo {
   base: string;
   kind: 'test' | 'suite';
   modifier: TestModifier;
-  /** Arguments carrying (name, fn) — the outer call's args for curried `.each(...)`. */
-  args: Node[];
+  /** The node carrying the test name (a string, an options object's `name`, or a named function). */
+  nameNode: Node | undefined;
+  /** The test body, if it is an inline function (or a Deno `{ fn() {} }` method). */
+  fn: Node | undefined;
+  /** `it.each(table)` / `test.for(cases)`: parameters are table data, not callbacks. */
+  parameterized?: boolean;
+}
+
+/** `{ skip: true }`, `{ only: true }`, `{ todo: 'reason' }`, Deno's `{ ignore: true }`: options known before the test runs. */
+function optionModifier(options: Node | undefined): TestModifier {
+  if (!options || options.type !== 'ObjectExpression') return null;
+  const flag = (key: string) =>
+    options.properties.some((p) => {
+      if (p.type !== 'ObjectProperty' || p.computed) return false;
+      const k = p.key.type === 'Identifier' ? p.key.name : stringValue(p.key as Node);
+      if (k !== key) return false;
+      const v = unwrap(p.value as Node);
+      return (v.type === 'BooleanLiteral' && v.value) || (stringValue(v) ?? '') !== '';
+    });
+  if (flag('only')) return 'only';
+  if (flag('todo')) return 'todo';
+  if (flag('skip') || flag('ignore')) return 'skip';
+  return null;
+}
+
+/** A property of an options object: `{ name: 'x' }` -> the `'x'` node; `{ fn() {} }` -> the method. */
+function optionProp(options: Node, key: string): Node | undefined {
+  if (options.type !== 'ObjectExpression') return undefined;
+  for (const p of options.properties) {
+    if ((p.type !== 'ObjectProperty' && p.type !== 'ObjectMethod') || p.computed) continue;
+    const k = p.key.type === 'Identifier' ? p.key.name : stringValue(p.key as Node);
+    if (k !== key) continue;
+    return p.type === 'ObjectMethod' ? p : (p.value as Node);
+  }
+  return undefined;
+}
+
+function isTestFn(n: Node | undefined): boolean {
+  return !!n && (isFunction(n) || n.type === 'ObjectMethod');
+}
+
+/**
+ * Name, body and options of a test call's arguments, in every shape the runners accept:
+ * `(name, fn)`, `(name, options, fn)` (node:test, vitest, Deno), `(fn)` with a named function and
+ * `({ name, fn, ignore, only })` (Deno), `(name, fn, timeout)` (jest).
+ */
+function testCallArgs(args: Node[], objectForm: boolean): { nameNode: Node | undefined; fn: Node | undefined; options: Node | undefined } {
+  const [first] = args;
+  if (objectForm && first?.type === 'ObjectExpression') {
+    const fn = optionProp(first, 'fn');
+    return { nameNode: optionProp(first, 'name') ?? (fn && isFunction(fn) && fn.type === 'FunctionExpression' ? (fn.id ?? undefined) : undefined), fn: isTestFn(fn) ? fn : undefined, options: first };
+  }
+  if (first && isFunction(first)) {
+    return { nameNode: first.type === 'FunctionExpression' ? (first.id ?? undefined) : undefined, fn: first, options: args.slice(1).find((a) => a.type === 'ObjectExpression') };
+  }
+  return { nameNode: first, fn: args.slice(1).find((a) => isFunction(a)), options: args.slice(1).find((a) => a.type === 'ObjectExpression') };
 }
 
 function resolveTestCall(call: t.CallExpression, localNames?: Set<string>): TestCallInfo | null {
   const mods: string[] = [];
   let curried = false;
+  let deno = false;
   let cur: Node = call.callee as Node;
   for (;;) {
     if (cur.type === 'Identifier') break;
     if (isMember(cur)) {
       const name = propName(cur);
+      // Deno.test(...) / Deno.test.only(...) / Deno.test.ignore(...)
+      if (name === 'test' && cur.object.type === 'Identifier' && cur.object.name === 'Deno') {
+        deno = true;
+        break;
+      }
       if (!name || !TEST_MEMBER_MODS.has(name)) return null;
       mods.unshift(name);
       cur = cur.object;
@@ -137,19 +220,45 @@ function resolveTestCall(call: t.CallExpression, localNames?: Set<string>): Test
     }
     return null;
   }
-  const base = (cur as t.Identifier).name;
+  const base = deno ? 'test' : (cur as t.Identifier).name;
   const isTest = TEST_BASES.has(base);
   const isSuite = SUITE_BASES.has(base);
   if (!isTest && !isSuite) return null;
-  if (localNames?.has(base) && SHADOWABLE_TEST_BASES.has(base)) return null;
-  if (curried && !mods.some((m) => m === 'each' || m === 'skipIf' || m === 'runIf' || m === 'for')) return null;
+  if (!deno && localNames?.has(base) && SHADOWABLE_TEST_BASES.has(base)) return null;
+  if (curried && !mods.some((m) => CURRIED_MODS.has(m))) return null;
+  // The inner `it.each(table)` / `test.skipIf(cond)` of a curried call is not a test itself.
+  if (!curried && mods.some((m) => CURRIED_MODS.has(m))) return null;
+  if (deno && (curried || mods.some((m) => m !== 'only' && m !== 'ignore'))) return null;
+  if (!deno && mods.includes('ignore')) return null;
 
-  let modifier: TestModifier = null;
-  if (base.startsWith('x') || mods.includes('skip')) modifier = 'skip';
+  const { nameNode, fn, options } = testCallArgs(call.arguments as Node[], deno);
+  let modifier: TestModifier = optionModifier(options);
+  if (base.startsWith('x') || mods.includes('skip') || mods.includes('ignore')) modifier = 'skip';
   if (base.startsWith('f') && base !== 'fails') modifier = 'only';
   if (mods.includes('only')) modifier = 'only';
   if (mods.includes('todo')) modifier = 'todo';
-  return { base, kind: isTest ? 'test' : 'suite', modifier, args: call.arguments as Node[] };
+  return { base, kind: isTest ? 'test' : 'suite', modifier, nameNode, fn, parameterized: mods.includes('each') || mods.includes('for') };
+}
+
+/**
+ * node:test subtests `t.test(name, [options], fn)` and Deno steps `t.step(name, fn)` / `t.step({ name, fn })`,
+ * where `t` is the context parameter of an enclosing test.
+ */
+function resolveSubtestCall(call: t.CallExpression, contextNames: Set<string>): TestCallInfo | null {
+  const callee = call.callee as Node;
+  if (!isMember(callee) || callee.object.type !== 'Identifier' || !contextNames.has(callee.object.name)) return null;
+  const name = propName(callee);
+  if (name !== 'test' && name !== 'step') return null;
+  const { nameNode, fn, options } = testCallArgs(call.arguments as Node[], name === 'step');
+  if (!fn) return null;
+  return { base: name, kind: 'test', modifier: optionModifier(options), nameNode, fn };
+}
+
+/** Name of a test function's first parameter: node:test/Deno's context `t`, or mocha/jest's `done`. */
+function firstParamName(fn: Node | undefined): string | null {
+  if (!fn || !('params' in fn)) return null;
+  const p = (fn as t.Function).params[0];
+  return p && p.type === 'Identifier' ? p.name : null;
 }
 
 function lineText(lines: string[], start: number, end: number): string {
@@ -162,6 +271,8 @@ export function unitNameForTestFile(path: string): string {
   let name = basename(path).replace(/\.(m|c)?[jt]sx?$/, '');
   name = name.replace(/[._-](test|spec|unit|int|integration)$/i, '');
   name = name.replace(/\.(test|spec)$/i, '');
+  // node:test's `test-pricing.js`
+  name = name.replace(/^test-(?=.)/i, '');
   return name.toLowerCase();
 }
 
@@ -181,34 +292,83 @@ interface MockScan {
   setups: MockSetup[];
 }
 
+/** Mock factories beyond `vi`/`jest`: bun:test's `mock()` / `spyOn()`, node:test's `mock` tracker. */
+export interface MockVocab {
+  /** Callable factories: `mock(impl)` from bun:test. */
+  mockFns: Set<string>;
+  /** `spyOn(obj, 'm')` from bun:test. */
+  spyFns: Set<string>;
+  /** Mock trackers with `.fn()` / `.method()` / `.module()` / `.restoreAll()`: node:test's `mock`, bun's `mock`. */
+  mockObjects: Set<string>;
+}
+
+const EMPTY_MOCKS: MockVocab = { mockFns: new Set(), spyFns: new Set(), mockObjects: new Set() };
+
+/** `mock` / `X.mock` (node:test's `t.mock`, `test.mock`): a tracker that creates and restores mocks. */
+function isMockTracker(node: Node, mv: MockVocab): boolean {
+  if (node.type === 'Identifier') return mv.mockObjects.has(node.name);
+  return isMember(node) && propName(node) === 'mock' && node.object.type === 'Identifier';
+}
+
+interface MockFactory {
+  kind: 'fn' | 'spyOn' | 'method';
+  /** The call that creates the mock (innermost call of the chain). */
+  call: t.CallExpression;
+  configures: boolean;
+}
+
+/**
+ * `vi.fn(impl)`, `jest.spyOn(o, 'm').mockReturnValue(1)`, bun's `mock(impl)` / `spyOn(o, 'm')`, node:test's
+ * `mock.fn(impl)` / `t.mock.method(o, 'm', impl)`.
+ */
+function mockFactory(init: Node, mv: MockVocab): MockFactory | null {
+  if (!isCall(init)) return null;
+  const root = chainRoot(init);
+  if (root.type !== 'Identifier') return null;
+  const props = chainProps(init);
+  const call = innermostCall(init);
+  const configured = props.some((p) => MOCK_CONFIG.test(p));
+  let kind: MockFactory['kind'] | null = null;
+  if (root.name === 'vi' || root.name === 'jest') {
+    if (props[0] === 'fn' || props[0] === 'spyOn') kind = props[0];
+  } else if (call.callee === root) {
+    kind = mv.mockFns.has(root.name) ? 'fn' : mv.spyFns.has(root.name) ? 'spyOn' : null;
+  } else if (isMember(call.callee as Node) && isMockTracker((call.callee as t.MemberExpression).object, mv)) {
+    const n = propName(call.callee as t.MemberExpression);
+    if (n === 'fn' || n === 'method') kind = n;
+  }
+  if (!kind) return null;
+  const nargs = call.arguments.length;
+  const configures = configured || (kind === 'fn' && nargs > 0) || (kind === 'method' && nargs >= 3);
+  return { kind, call, configures };
+}
+
 /** Find mock configuration in a subtree (top-level setup or a single test body). */
-function scanMocks(source: string, root: Node, skip?: (n: Node) => boolean): MockScan {
+function scanMocks(source: string, root: Node, skip?: (n: Node) => boolean, mv: MockVocab = EMPTY_MOCKS): MockScan {
   const setups: MockSetup[] = [];
   walk(root, (node) => {
     if (skip && skip(node)) return false;
     if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init) {
-      const init = unwrap(node.init);
-      if (isCall(init)) {
-        const rootNode = chainRoot(init);
-        const props = chainProps(init);
-        const isMockFactory =
-          rootNode.type === 'Identifier' && (rootNode.name === 'vi' || rootNode.name === 'jest') && (props[0] === 'fn' || props[0] === 'spyOn');
-        if (isMockFactory) {
-          const configures = props.some((p) => MOCK_CONFIG.test(p)) || (props[0] === 'fn' && innermostCallArgs(init).length > 0);
-          setups.push({ target: node.id.name, line: node.loc!.start.line, configuresReturn: configures });
-          if (props[0] === 'spyOn') {
-            const spy = innermostCall(init);
-            const target = spyTarget(source, spy);
-            if (target) setups.push({ target, line: node.loc!.start.line, configuresReturn: configures });
-          }
+      const factory = mockFactory(unwrap(node.init), mv);
+      if (factory) {
+        setups.push({ target: node.id.name, line: node.loc!.start.line, configuresReturn: factory.configures });
+        if (factory.kind !== 'fn') {
+          const target = spyTarget(source, factory.call);
+          if (target) setups.push({ target, line: node.loc!.start.line, configuresReturn: factory.configures });
         }
       }
+    }
+    // node:test: t.mock.method(obj, 'm', impl) as a statement replaces obj.m in place
+    const bare = isCall(node) ? mockFactory(node, mv) : null;
+    if (bare && bare.call === node && bare.kind === 'method' && bare.configures) {
+      const target = spyTarget(source, bare.call);
+      if (target) setups.push({ target, line: node.loc!.start.line, configuresReturn: true });
     }
     if (isCall(node) && isMember(node.callee as Node)) {
       const callee = node.callee as t.MemberExpression;
       const name = propName(callee);
       if (name && MOCK_CONFIG.test(name)) {
-        const target = mockTargetText(source, callee.object);
+        const target = mockTargetText(source, callee.object, mv);
         if (target) setups.push({ target, line: node.loc!.start.line, configuresReturn: true });
       }
     }
@@ -228,10 +388,6 @@ function innermostCall(call: Node): t.CallExpression {
   }
 }
 
-function innermostCallArgs(call: Node): Node[] {
-  return innermostCall(call).arguments as Node[];
-}
-
 function spyTarget(source: string, spy: t.CallExpression): string | null {
   const [obj, method] = spy.arguments as Node[];
   const m = stringValue(method);
@@ -240,9 +396,13 @@ function spyTarget(source: string, spy: t.CallExpression): string | null {
 }
 
 /** Text of what a `.mockReturnValue` call configures: `fn`, `vi.mocked(fn)` -> `fn`, `vi.spyOn(o,'m')` -> `o.m`. */
-function mockTargetText(source: string, obj: Node): string | null {
+function mockTargetText(source: string, obj: Node, mv: MockVocab = EMPTY_MOCKS): string | null {
   const node = unwrap(obj);
+  // node:test: fn.mock.mockImplementation(impl) configures `fn`
+  if (isMember(node) && propName(node) === 'mock') return normText(source, node.object);
   if (isCall(node)) {
+    const factory = mockFactory(node, mv);
+    if (factory && factory.call === node && factory.kind !== 'fn') return spyTarget(source, factory.call);
     const root = chainRoot(node);
     const props = chainProps(node);
     if (root.type === 'Identifier' && (root.name === 'vi' || root.name === 'jest')) {
@@ -253,7 +413,7 @@ function mockTargetText(source: string, obj: Node): string | null {
     // chained: fn.mockReturnValueOnce(1).mockReturnValueOnce(2)
     if (isMember(node.callee as Node)) {
       const n = propName(node.callee as t.MemberExpression);
-      if (n && MOCK_CONFIG.test(n)) return mockTargetText(source, (node.callee as t.MemberExpression).object);
+      if (n && MOCK_CONFIG.test(n)) return mockTargetText(source, (node.callee as t.MemberExpression).object, mv);
     }
     return null;
   }
@@ -270,6 +430,22 @@ function calleeName(source: string, call: Node): string {
   return isCall(call) ? normText(source, call.callee as Node) : '';
 }
 
+/** A falsy literal, which a truthiness assertion always rejects. */
+function isFalsyLiteral(node: Node | undefined): boolean {
+  if (!node) return false;
+  const n = unwrap(node);
+  if (n.type === 'NumericLiteral') return n.value === 0;
+  if (n.type === 'BooleanLiteral') return !n.value;
+  if (n.type === 'NullLiteral') return true;
+  if (n.type === 'Identifier') return n.name === 'undefined';
+  return stringValue(n) === '';
+}
+
+/** `assert.ok(0)`, `assert(false)`, `t.ok(false)`: a deliberate "should not get here", i.e. `fail()`. */
+function isFailMarker(source: string, call: Node): boolean {
+  return isCall(call) && /(^|\.)(assert|ok|isOk|isTrue|true|truthy)$/.test(calleeName(source, call)) && isFalsyLiteral(call.arguments[0] as Node | undefined);
+}
+
 function containsFailOrThrow(source: string, node: Node | null | undefined): boolean {
   if (!node) return false;
   let found = false;
@@ -277,7 +453,55 @@ function containsFailOrThrow(source: string, node: Node | null | undefined): boo
     if (found) return false;
     if (isFunction(n) || n.type === 'FunctionDeclaration') return n === node ? undefined : false;
     if (n.type === 'ThrowStatement') found = true;
-    if (isCall(n) && FAIL_CALLS.has(calleeName(source, n))) found = true;
+    if (isCall(n) && (FAIL_CALLS.has(calleeName(source, n)) || CTX_FAIL.test(calleeName(source, n)) || isFailMarker(source, n))) found = true;
+    return undefined;
+  });
+  return found;
+}
+
+/** Callbacks that fail the test when handed an error: `reject(err)`, `done(err)`, `t.fail(err)`, `t.ifError(err)`. */
+const ERROR_SINKS = /^(reject|done|cb|callback|next|fail|ifError)$/;
+
+/** `catch (err) { reject(err) }`: the error is passed on to something that fails the test, not swallowed. */
+function forwardsError(handler: t.CatchClause): boolean {
+  const param = handler.param;
+  if (!param || param.type !== 'Identifier') return false;
+  let found = false;
+  walk(handler.body, (n) => {
+    if (found) return false;
+    // catch (err) { serverError = err }: kept for a later check
+    if (n.type === 'AssignmentExpression' && n.right.type === 'Identifier' && n.right.name === param.name) found = true;
+    if (!isCall(n) || !(n.arguments as Node[]).some((a) => a.type === 'Identifier' && a.name === param.name)) return undefined;
+    const callee = n.callee as Node;
+    const name = callee.type === 'Identifier' ? callee.name : isMember(callee) ? propName(callee) : null;
+    if (name && ERROR_SINKS.test(name)) found = true;
+    return undefined;
+  });
+  return found;
+}
+
+/**
+ * `catch (err) { assert.equal(err.name, 'TypeError') }`: the catch asserts on details of the error
+ * (a property, `instanceof`), which an AssertionError thrown in the `try` would not satisfy, so a failing
+ * assertion in the `try` still fails the test. A bare truthiness check (`assert.ok(err)`) passes for any error.
+ */
+function checksErrorDetails(handler: t.CatchClause, vocab: AssertVocab): boolean {
+  const param = handler.param;
+  if (!param || param.type !== 'Identifier') return false;
+  const isDetail = (n: Node) =>
+    (isMember(n) && unwrap(n.object).type === 'Identifier' && (unwrap(n.object) as t.Identifier).name === param.name) ||
+    (n.type === 'BinaryExpression' && n.operator === 'instanceof' && n.left.type === 'Identifier' && n.left.name === param.name);
+  let found = false;
+  walk(handler.body, (n) => {
+    if (found) return false;
+    if (!isAssertionCall(n, vocab) || !isCall(n)) return undefined;
+    for (const arg of n.arguments as Node[]) {
+      walk(arg, (m) => {
+        if (found || isFunction(m)) return false;
+        if (isDetail(m)) found = true;
+        return undefined;
+      });
+    }
     return undefined;
   });
   return found;
@@ -305,14 +529,47 @@ interface AssertVocab {
   assertRoots: Set<string>;
   /** Functions declared in this file whose bodies assert (`function check(x) { expect(x)... }`). */
   helpers: Set<string>;
+  /**
+   * Test-context objects whose methods assert, per test: tap/ava/tspl-style `t.equal(...)`, `t.is(...)`,
+   * and `p.ok(...)` after `const p = tspl(t, { plan: 1 })`.
+   */
+  ctxObjects?: Set<string>;
+}
+
+/** Assertion methods of tap/ava/tspl test contexts (and node:assert's API, which tspl mirrors). */
+const CTX_ASSERT =
+  /^(ok|notOk|equal|notEqual|equals|strictEqual|notStrictEqual|deepEqual|notDeepEqual|deepStrictEqual|notDeepStrictEqual|partialDeepStrictEqual|throws|doesNotThrow|rejects|doesNotReject|match|doesNotMatch|ifError|fail|pass|same|notSame|strictSame|strictNotSame|is|not|true|false|truthy|falsy|like|unlike|regex|notRegex|throwsAsync|notThrows|notThrowsAsync|has|hasStrict|type|error)$/;
+
+/** `require('node:assert').strictEqual(...)`: a method of an assertion module required inline. */
+function isInlineRequiredAssert(callee: Node): boolean {
+  if (!isMember(callee)) return false;
+  let cur = unwrap(callee.object);
+  while (isMember(cur)) cur = unwrap(cur.object);
+  return isCall(cur) && cur.callee.type === 'Identifier' && cur.callee.name === 'require' && ASSERT_MODULES.test(stringValue(cur.arguments[0] as Node) ?? '');
+}
+
+/** Assertion methods that aren't reached from a known root name: `t.assert.x`, `t.equal`, `require('assert').x`. */
+function isAssertMethod(callee: Node, vocab: AssertVocab): boolean {
+  return isContextAssert(callee) || isCtxAssert(callee, vocab) || isInlineRequiredAssert(callee);
+}
+
+/** `t.equal(...)` on a test-context object that asserts. */
+function isCtxAssert(callee: Node, vocab: AssertVocab): boolean {
+  return !!vocab.ctxObjects && isMember(callee) && callee.object.type === 'Identifier' && vocab.ctxObjects.has(callee.object.name) && CTX_ASSERT.test(propName(callee) ?? '');
 }
 
 const EMPTY_VOCAB: AssertVocab = { assertFns: new Map(), assertRoots: new Set(['assert']), helpers: new Set() };
+
+/** node:test's `t.assert.equal(...)`: an assertion namespace hanging off the test context. */
+function isContextAssert(callee: Node): boolean {
+  return isMember(callee) && isMember(callee.object) && propName(callee.object) === 'assert' && callee.object.object.type === 'Identifier';
+}
 
 /** True if `call` starts or is an assertion: expect chains, assert.*, imported assert fns, asserting helpers. */
 function isAssertionCall(call: Node, vocab: AssertVocab): boolean {
   if (!isCall(call)) return false;
   const callee = call.callee as Node;
+  if (isAssertMethod(callee, vocab)) return true;
   const root = chainRoot(callee);
   if (root.type === 'Identifier') {
     if (root.name === 'expect' || vocab.assertRoots.has(root.name)) return true;
@@ -422,7 +679,7 @@ function assertionContext(source: string, target: Node, ancestors: Node[], bodyI
       if (tryStmt && tryStmt.type === 'TryStatement' && catchIsGuarded(source, tryStmt, ancestors[i - 2], vocab)) ctx.catchGuarded = true;
     }
     if (a.type === 'TryStatement' && child === a.block && a.handler) {
-      if (!containsFailOrThrow(source, a.handler.body)) ctx.inSwallowingTry = true;
+      if (!containsFailOrThrow(source, a.handler.body) && !forwardsError(a.handler) && !checksErrorDetails(a.handler, vocab)) ctx.inSwallowingTry = true;
     }
     if ((a.type === 'IfStatement' || a.type === 'ConditionalExpression') && child !== a.test) {
       // Walk up an else-if chain to its head; if every branch asserts, something is always checked.
@@ -444,6 +701,7 @@ function assertionContext(source: string, target: Node, ancestors: Node[], bodyI
     }
   }
   if (guards.length) ctx.guards = guards;
+  if (ancestors.slice(bodyIndex).some((a) => isFunction(a) || a.type === 'FunctionDeclaration' || a.type === 'ObjectMethod')) ctx.inCallback = true;
   return ctx;
 }
 
@@ -591,6 +849,7 @@ function firstPureRef(node: Node, pure: PureBindings): string | null {
 function isComparingCall(call: Node, vocab: AssertVocab): boolean {
   if (!isCall(call)) return false;
   const callee = call.callee as Node;
+  if (isAssertMethod(callee, vocab)) return true;
   const root = chainRoot(callee);
   if (root.type !== 'Identifier') return false;
   if (root.name === 'expect') return true;
@@ -691,7 +950,21 @@ function withOwnLiteral(info: ExprInfo, node: Node, pure: PureBindings): ExprInf
   return { ...info, pureLiteral: true, ownLiteral: { name, line: pure.get(name)!.line } };
 }
 
-function scanAssertions(source: string, lines: string[], body: Node, aliases: Map<string, string>, vocab: AssertVocab = EMPTY_VOCAB): AssertionScan {
+interface ScanScope {
+  /** Subtest bodies (`t.test(...)`, `t.step(...)`): their assertions belong to the subtest. */
+  skip?: Set<Node>;
+  /** The test's context parameter (`t`), for `t.plan(n)`. */
+  ctx?: string | null;
+}
+
+function scanAssertions(
+  source: string,
+  lines: string[],
+  body: Node,
+  aliases: Map<string, string>,
+  vocab: AssertVocab = EMPTY_VOCAB,
+  scope: ScanScope = {},
+): AssertionScan {
   const assertions: Assertion[] = [];
   const pure = ownLiteralBindings(body, vocab);
   const describeOperand = (n: Node) => withOwnLiteral(describeExpr(source, n), n, pure);
@@ -704,9 +977,23 @@ function scanAssertions(source: string, lines: string[], body: Node, aliases: Ma
   };
 
   walk(body, (node, ancestors) => {
+    if (scope.skip?.has(node)) return false;
+    // An assertion handed over as a handler: `ws.on('error', t.assert.fail)`, `t.assert.ok.bind(null, true)`.
+    if (isMember(node) && isAssertMethod(node, vocab)) {
+      const parent = ancestors[ancestors.length - 1];
+      const called = parent && isCall(parent) && parent.callee === node;
+      const chained = parent && isMember(parent) && parent.object === node && propName(parent) !== 'bind';
+      if (!called && !chained) helperAssertionCalls++;
+    }
     if (!isCall(node)) return;
     const callee = node.callee as Node;
     const bodyIndex = 0;
+
+    // node:test t.plan(n): the test fails unless exactly n assertions run.
+    if (scope.ctx && isMember(callee) && callee.object.type === 'Identifier' && callee.object.name === scope.ctx && propName(callee) === 'plan') {
+      hasAssertionCountGuard = true;
+      return;
+    }
 
     // expect.assertions(n) / expect.hasAssertions()
     if (isMember(callee) && callee.object.type === 'Identifier' && callee.object.name === 'expect') {
@@ -784,15 +1071,22 @@ function scanAssertions(source: string, lines: string[], body: Node, aliases: Ma
     // assert(x) / assert.equal(a, b) / assert.strict.equal(...) / equal(a, b) imported from node:assert
     const root = chainRoot(callee);
     const importedFn = callee.type === 'Identifier' ? vocab.assertFns.get(callee.name) : undefined;
-    if (importedFn !== undefined || (root.type === 'Identifier' && vocab.assertRoots.has(root.name) && (callee === root || isMember(callee)))) {
+    if (importedFn !== undefined || isAssertMethod(callee, vocab) || (root.type === 'Identifier' && vocab.assertRoots.has(root.name) && (callee === root || isMember(callee)))) {
       const method = importedFn ?? (callee === root ? 'assert' : propName(callee as t.MemberExpression));
-      if (method === 'fail') {
+      if (method === 'fail' || method === 'pass' || isFailMarker(source, node)) {
         helperAssertionCalls++;
         return;
       }
       const start = node.loc!.start;
-      const [subj, ...rest] = node.arguments as Node[];
       const m = method ?? 'assert';
+      // Deno's assertSnapshot(t, value) takes the test context first.
+      const callArgs = (node.arguments as Node[]).slice(/^assert(Inline)?Snapshot$/.test(m) ? 1 : 0);
+      let [subj, ...rest] = callArgs;
+      // node:assert is (actual, expected), but `strictEqual('hello', await body.text())` puts the expected
+      // literal first; the computed side is the subject.
+      if (subj && rest[0] && matcherKindOf(m) === 'equal' && describeExpr(source, subj).kind === 'literal' && describeExpr(source, rest[0]).kind !== 'literal') {
+        [subj, rest[0]] = [rest[0], subj];
+      }
       assertions.push({
         line: start.line,
         column: start.column + 1,
@@ -801,7 +1095,7 @@ function scanAssertions(source: string, lines: string[], body: Node, aliases: Ma
         subject: subj ? withAlias(describeOperand(subj)) : null,
         matcher: m,
         matcherKind: matcherKindOf(m),
-        negated: /^(not|isNot|doesNot)/.test(m),
+        negated: /^(not|isNot|doesNot|assertNot)/.test(m),
         args: rest.slice(0, 1).map(describeOperand),
         async: m === 'rejects' || m === 'doesNotReject',
         awaitedOrReturned: true,
@@ -917,7 +1211,7 @@ function declaredNames(ast: t.File): Set<string> {
 }
 
 /** `spy.mockRestore()` / `fn.mockReset()` / `vi.restoreAllMocks()` inside a test body. */
-function scanRestores(source: string, body: Node): MockRestore[] {
+function scanRestores(source: string, body: Node, mv: MockVocab = EMPTY_MOCKS): MockRestore[] {
   const out: MockRestore[] = [];
   walk(body, (node) => {
     if (!isCall(node) || !isMember(node.callee as Node)) return;
@@ -928,12 +1222,139 @@ function scanRestores(source: string, body: Node): MockRestore[] {
     const obj = callee.object;
     if (obj.type === 'Identifier' && (obj.name === 'vi' || obj.name === 'jest') && /^(restoreAllMocks|resetAllMocks)$/.test(name)) {
       out.push({ target: null, line });
+    } else if (name === 'restore' && isMember(obj) && propName(obj) === 'mock') {
+      // node:test: fn.mock.restore()
+      out.push({ target: normText(source, obj.object), line });
+    } else if (isMockTracker(obj as Node, mv) && /^(restoreAll|reset|restore)$/.test(name)) {
+      // node:test: mock.restoreAll() / t.mock.reset(); bun: mock.restore()
+      out.push({ target: null, line });
     } else if (MOCK_RESTORE.test(name)) {
-      const target = mockTargetText(source, obj as Node);
+      const target = mockTargetText(source, obj as Node, mv);
       if (target) out.push({ target, line });
     }
   });
   return out;
+}
+
+/**
+ * A skip decided inside the body: mocha's `this.skip()`, node:test's `t.skip()` / `t.todo()`, as an
+ * unconditional top-level statement (a guarded `if (!db) this.skip()` still runs elsewhere).
+ */
+function bodyModifier(fn: Node | undefined): TestModifier {
+  if (!fn) return null;
+  const body = (fn as t.ArrowFunctionExpression).body as Node;
+  if (body.type !== 'BlockStatement') return null;
+  const ctx = firstParamName(fn);
+  for (const st of body.body) {
+    if (st.type !== 'ExpressionStatement') continue;
+    const e = unwrap(st.expression as Node);
+    if (!isCall(e) || !isMember(e.callee as Node)) continue;
+    const callee = e.callee as t.MemberExpression;
+    const name = propName(callee);
+    const isThis = callee.object.type === 'ThisExpression' && fn.type !== 'ArrowFunctionExpression';
+    const isCtx = callee.object.type === 'Identifier' && callee.object.name === ctx;
+    if (name === 'skip' && (isThis || isCtx)) return 'skip';
+    if (name === 'todo' && isCtx) return 'todo';
+  }
+  return null;
+}
+
+/**
+ * Callback-style tests (`it('emits', (done) => { bus.on('x', () => done()); ... })`) fail by timeout or
+ * error unless the code calls back, so calling `done` from a callback or handing it to the code is a
+ * check. Calling it synchronously at the end of the body is not. A parameter used as an object
+ * (`t.test`, `t.assert`) is a test context, not a callback.
+ */
+/**
+ * The test context's assertion vocabulary: `t` itself (tap/ava/tspl), objects derived from it
+ * (`const p = tspl(t, { plan: 2 })`, `t = tspl(t)`), and functions destructured from those
+ * (`const { strictEqual } = tspl(t)`). `planned` is set when one of them was given `{ plan: n }`.
+ */
+function contextVocab(fn: Node, vocab: AssertVocab): { vocab: AssertVocab; planned: boolean } {
+  const ctx = firstParamName(fn);
+  if (!ctx) return { vocab, planned: false };
+  const objects = new Set([...(vocab.ctxObjects ?? []), ctx]);
+  const fns = new Map(vocab.assertFns);
+  let planned = false;
+  walk((fn as t.Function).body as Node, (n) => {
+    let id: Node;
+    let init: Node;
+    if (n.type === 'VariableDeclarator' && n.init) [id, init] = [n.id, unwrap(n.init)];
+    else if (n.type === 'AssignmentExpression' && n.operator === '=') [id, init] = [n.left as Node, unwrap(n.right)];
+    else return;
+    if (!isCall(init) || !(init.arguments as Node[]).some((a) => a.type === 'Identifier' && objects.has(a.name))) return;
+    if ((init.arguments as Node[]).some((a) => a.type === 'ObjectExpression' && optionProp(a, 'plan'))) planned = true;
+    if (id.type === 'Identifier') objects.add(id.name);
+    else if (id.type === 'ObjectPattern') {
+      for (const p of id.properties) {
+        if (p.type !== 'ObjectProperty' || p.value.type !== 'Identifier') continue;
+        const key = p.key.type === 'Identifier' ? p.key.name : stringValue(p.key as Node);
+        if (key && CTX_ASSERT.test(key)) fns.set(p.value.name, key);
+      }
+    }
+  });
+  return { vocab: { ...vocab, assertFns: fns, ctxObjects: objects }, planned };
+}
+
+const CALLBACK_PARAM = /^(done|cb|callback|next|finish|end)$/;
+
+function callbackChecks(fn: Node, vocab: AssertVocab, skip?: Set<Node>): number {
+  let total = 0;
+  for (const p of (fn as t.Function).params) {
+    if (p.type !== 'Identifier' || !CALLBACK_PARAM.test(p.name)) continue;
+    let usedAsObject = false;
+    let checks = 0;
+    walk((fn as t.Function).body as Node, (n, anc) => {
+      if (skip?.has(n)) return false;
+      if (n.type !== 'Identifier' || n.name !== p.name) return undefined;
+      const parent = anc[anc.length - 1];
+      if (!parent) return undefined;
+      if (isMember(parent) && parent.object === n) {
+        if (propName(parent) !== 'fail') usedAsObject = true;
+      } else if (isCall(parent) && (parent.arguments as Node[]).includes(n)) {
+        if (!isAssertionCall(parent, vocab)) checks++;
+      } else if (parent.type === 'ObjectProperty' && parent.value === n && anc.some((a) => isCall(a) && !isAssertionCall(a, vocab))) {
+        // router.handle(req, { end: done }): handed to the code inside an argument object
+        checks++;
+      } else if (isCall(parent) && parent.callee === n && anc.some((a) => isFunction(a) || a.type === 'FunctionDeclaration' || a.type === 'ObjectMethod')) {
+        checks++;
+      }
+      return undefined;
+    });
+    if (!usedAsObject) total += checks;
+  }
+  return total;
+}
+
+/** Local names of bun:test / node:test mock factories (`import { mock, spyOn } from 'bun:test'`). */
+function mockVocabulary(ast: t.File): MockVocab {
+  const mv: MockVocab = { mockFns: new Set(), spyFns: new Set(), mockObjects: new Set() };
+  const bind = (mod: string, imported: string, local: string) => {
+    if (imported === 'mock') {
+      mv.mockObjects.add(local);
+      if (mod === 'bun:test') mv.mockFns.add(local);
+    } else if (imported === 'spyOn' && mod === 'bun:test') mv.spyFns.add(local);
+  };
+  for (const stmt of ast.program.body) {
+    if (stmt.type !== 'ImportDeclaration' || !MOCK_MODULES.test(stmt.source.value)) continue;
+    for (const sp of stmt.specifiers) {
+      if (sp.type === 'ImportSpecifier') bind(stmt.source.value, sp.imported.type === 'Identifier' ? sp.imported.name : sp.imported.value, sp.local.name);
+    }
+  }
+  // const { mock } = require('node:test')
+  walk(ast, (node) => {
+    if (node.type !== 'VariableDeclarator' || !node.init || node.id.type !== 'ObjectPattern') return;
+    const init = unwrap(node.init);
+    if (!isCall(init) || init.callee.type !== 'Identifier' || init.callee.name !== 'require') return;
+    const spec = stringValue(init.arguments[0] as Node);
+    if (!spec || !MOCK_MODULES.test(spec)) return;
+    for (const prop of node.id.properties) {
+      if (prop.type !== 'ObjectProperty' || prop.value.type !== 'Identifier') continue;
+      const key = prop.key.type === 'Identifier' ? prop.key.name : stringValue(prop.key as Node);
+      if (key) bind(spec, key, prop.value.name);
+    }
+  });
+  return mv;
 }
 
 function testName(source: string, arg: Node | undefined): string {
@@ -973,6 +1394,7 @@ export function parseJsTestFile(path: string, source: string): TestFileModel {
   });
 
   const vocab = assertVocabulary(ast);
+  const mockVocab = mockVocabulary(ast);
   const localNames = declaredNames(ast);
 
   const isUnitSpec = (spec: string) => isLocalSpecifier(spec) && specifierUnitName(spec) === unitName && unitName.length > 0;
@@ -980,21 +1402,31 @@ export function parseJsTestFile(path: string, source: string): TestFileModel {
 
   // Locate test bodies first so file-level mock scanning can skip them.
   const testBodies = new Set<Node>();
+  /** Test body -> bodies of its node:test subtests / Deno steps. */
+  const subtestsOf = new Map<Node, Set<Node>>();
 
   walk(ast, (node, ancestors) => {
     if (node.type !== 'CallExpression') return;
     // A test-looking call inside a test body is not a test (runners reject nested tests): it's a local fn.
-    const info = ancestors.some((a) => testBodies.has(a)) ? null : resolveTestCall(node, localNames);
+    // The exception is a subtest on the test's own context: node:test `t.test(...)`, Deno `t.step(...)`.
+    let parentBody: Node | undefined;
+    for (let i = ancestors.length - 1; i >= 0 && !parentBody; i--) if (testBodies.has(ancestors[i]!)) parentBody = ancestors[i];
+    let info: TestCallInfo | null;
+    if (parentBody) {
+      const ctx = firstParamName(parentBody);
+      info = ctx ? resolveSubtestCall(node, new Set([ctx])) : null;
+      if (info?.fn) subtestsOf.set(parentBody, (subtestsOf.get(parentBody) ?? new Set()).add(info.fn));
+    } else info = resolveTestCall(node, localNames);
     if (info) {
-      const fn = info.args.slice(1).find((a) => isFunction(a));
+      const fn = info.fn;
       if (fn && info.kind === 'test') testBodies.add(fn);
       const start = node.loc!.start;
       const tc: TestCase = {
-        name: testName(source, info.args[0]),
+        name: testName(source, info.nameNode),
         kind: info.kind,
         line: start.line,
         endLine: node.loc!.end.line,
-        modifier: info.modifier,
+        modifier: info.modifier ?? (info.kind === 'test' ? bodyModifier(fn) : null),
         headText: lineText(lines, start.line, start.line),
         analyzable: !!fn,
         assertions: [],
@@ -1003,8 +1435,36 @@ export function parseJsTestFile(path: string, source: string): TestFileModel {
         mockSetups: [],
       };
       (tc as TestCase & { _fn?: Node })._fn = fn;
+      if (info.parameterized) (tc as TestCase & { _table?: boolean })._table = true;
       tests.push(tc);
       return;
+    }
+
+    // bun:test / node:test: spyOn(unit, 'f') / mock.method(unit, 'f', impl) on the unit's own exports
+    const factory = mockFactory(node, mockVocab);
+    // (vi.spyOn / jest.spyOn are handled with vi.mock below.)
+    const nonViSpy = factory?.kind === 'method' || (factory?.kind === 'spyOn' && (node.callee as Node).type === 'Identifier');
+    if (factory && factory.call === node && nonViSpy) {
+      const [obj] = node.arguments as Node[];
+      const objName = obj && obj.type === 'Identifier' ? obj.name : null;
+      if (objName && imports.has(objName) && isUnitSpec(imports.get(objName)!)) {
+        unitSpies.push({ target: spyTarget(source, node) ?? normText(source, node), line: node.loc!.start.line, text: lineText(lines, node.loc!.start.line, node.loc!.end.line) });
+      }
+    }
+    // bun:test mock.module('./x', factory) / node:test mock.module('./x', options)
+    if (isMember(node.callee as Node) && propName(node.callee as t.MemberExpression) === 'module' && isMockTracker((node.callee as t.MemberExpression).object, mockVocab)) {
+      const spec = stringValue(node.arguments[0] as Node);
+      if (spec) {
+        const factoryNode = node.arguments[1] as Node | undefined;
+        const factoryText = factoryNode ? textOf(source, factoryNode) : '';
+        moduleMocks.push({
+          specifier: spec,
+          line: node.loc!.start.line,
+          text: lineText(lines, node.loc!.start.line, node.loc!.start.line),
+          isUnitUnderTest: isUnitSpec(spec) && importsUnit,
+          partial: /importOriginal|requireActual|importActual/.test(factoryText) || factoryCallsItsParam(factoryNode),
+        });
+      }
     }
 
     // vi.mock('../src/x') / jest.mock(...)
@@ -1040,25 +1500,38 @@ export function parseJsTestFile(path: string, source: string): TestFileModel {
     }
   });
 
-  const fileLevel = scanMocks(source, ast, (n) => testBodies.has(n));
+  const fileLevel = scanMocks(source, ast, (n) => testBodies.has(n), mockVocab);
 
   // Only keep unit spies that actually replace behavior.
   const replacedTargets = new Set(fileLevel.setups.filter((s) => s.configuresReturn).map((s) => s.target));
-  for (const fn of testBodies) for (const s of scanMocks(source, fn).setups) if (s.configuresReturn) replacedTargets.add(s.target);
+  for (const fn of testBodies) for (const s of scanMocks(source, fn, undefined, mockVocab).setups) if (s.configuresReturn) replacedTargets.add(s.target);
   const behaviorSpies = unitSpies.filter((s) => replacedTargets.has(s.target));
 
+  const ctxVocabOf = new Map<Node, AssertVocab>();
   for (const tc of tests) {
     const fn = (tc as TestCase & { _fn?: Node })._fn;
+    const table = (tc as TestCase & { _table?: boolean })._table;
     delete (tc as TestCase & { _fn?: Node })._fn;
+    delete (tc as TestCase & { _table?: boolean })._table;
     if (!fn || tc.kind !== 'test') continue;
     const fnBody = (fn as t.ArrowFunctionExpression).body as Node;
+    const subtests = subtestsOf.get(fn);
     const aliases = collectAliases(source, fnBody);
-    const scan = scanAssertions(source, lines, fnBody, aliases, vocab);
+    // A subtest also sees what its parent derived from the context (`const p = tspl(t)` used in `t.test`).
+    const parent = [...subtestsOf].find(([, subs]) => subs.has(fn))?.[0];
+    const ctx = contextVocab(fn, (parent && ctxVocabOf.get(parent)) || vocab);
+    ctxVocabOf.set(fn, ctx.vocab);
+    const scan = scanAssertions(source, lines, fnBody, aliases, ctx.vocab, { skip: subtests, ctx: firstParamName(fn) });
     tc.assertions = scan.assertions;
-    tc.helperAssertionCalls = scan.helperAssertionCalls;
-    tc.hasAssertionCountGuard = scan.hasAssertionCountGuard;
-    tc.mockSetups = [...fileLevel.setups, ...scanMocks(source, fnBody).setups];
-    const restores = scanRestores(source, fnBody);
+    tc.helperAssertionCalls = scan.helperAssertionCalls + (table ? 0 : callbackChecks(fn, ctx.vocab, subtests));
+    tc.hasAssertionCountGuard = scan.hasAssertionCountGuard || ctx.planned;
+    // A test that only groups subtests is a suite: the subtests are checked on their own.
+    if (subtests?.size && tc.assertions.length === 0 && tc.helperAssertionCalls === 0 && !tc.hasAssertionCountGuard) {
+      tc.kind = 'suite';
+      continue;
+    }
+    tc.mockSetups = [...fileLevel.setups, ...scanMocks(source, fnBody, undefined, mockVocab).setups];
+    const restores = scanRestores(source, fnBody, mockVocab);
     if (restores.length) tc.mockRestores = restores;
   }
 

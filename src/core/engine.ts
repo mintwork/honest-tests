@@ -105,7 +105,7 @@ export function discoverTestFiles(paths: string[], cwd: string, ignore: string[]
     if (!st.isFile()) return;
     if (!explicit && isIgnored(abs)) return;
     const adapter = adapterFor(abs);
-    if (adapter && (explicit || adapter.isTestFile(toPosix(abs)))) out.add(abs);
+    if (adapter && (explicit || adapter.isTestFile(toPosix(abs)) || adapter.isCandidateTestFile?.(toPosix(abs)))) out.add(abs);
   };
   for (const p of paths) visit(resolve(cwd, p), true);
   return [...out];
@@ -195,13 +195,16 @@ export function audit(opts: AuditOptions, version = '0.0.0'): AuditResult {
       unsupported.push({ file: display, language: adapter.id });
       continue;
     }
+    // `test/helpers.js`-style files only count when they hold tests.
+    const candidate = !adapter.isTestFile(toPosix(abs)) && !!adapter.isCandidateTestFile?.(toPosix(abs));
     let model: TestFileModel;
     try {
       model = adapter.parseTestFile(abs, readFileSync(abs, 'utf8'));
     } catch (e) {
-      parseErrors.push({ file: display, message: (e as Error).message });
+      if (!candidate) parseErrors.push({ file: display, message: (e as Error).message });
       continue;
     }
+    if (candidate && model.tests.length === 0) continue;
     filesScanned++;
     testsScanned += model.tests.filter((t) => t.kind === 'test').length;
     findings.push(...runRules(model, rules, display));

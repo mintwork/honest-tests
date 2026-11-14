@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Mocha, node:test, Bun and Deno** test files are audited, and `mutate` runs their related tests:
+  - node:test: `t.test` subtests, `t.assert.*`, `{ skip, todo, only }` options, `t.skip()` / `t.todo()`,
+    `t.plan(n)`, `mock.fn` / `t.mock.method` / `mock.module`, and tap/tspl-style `t.equal(...)`.
+  - Mocha: `this.skip()`, `done` callbacks that the code calls back, files under `test/`.
+  - Bun: `mock()` / `spyOn()` / `mock.module` from `bun:test`, `test.if` / `test.todoIf`.
+  - Deno: every `Deno.test` call shape, `t.step`, `@std/assert` (jsr:, npm: and deno.land URLs),
+    `assertSnapshot`; projects with only a `deno.json(c)` are found as mutation roots.
+  - `mutate` passes the related test files to `mocha`, `node --test`, `bun test` and `deno test`, and drops
+    `nyc` / `c8` wrappers so coverage thresholds don't fail subset runs.
+- Files under `test/` and `test-*.js` files (node:test and mocha defaults) are audited when they contain
+  tests; helpers and fixtures next to them are skipped.
+
+### Fixed
+
+- Fewer false positives: `assert.strictEqual('hello', await body.text())` (expected value first) is no
+  longer read as an assertion on a constant; `assert.ok(0)` / `assert(false)` count as `fail()`; a catch
+  that forwards the error (`reject(err)`, `done(err)`) or asserts on its details (`err.code`,
+  `instanceof`) is not "swallowing"; constant checkpoints (`t.ok(true)`) under a planned assertion count
+  aren't tautological.
+- `it.each(table)(...)` / `test.skipIf(c)(...)` no longer count as two tests.
+
 ## [0.1.2] - 2026-11-14
 
 ### Changed
