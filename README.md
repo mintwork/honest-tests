@@ -373,9 +373,10 @@ Exit codes: `0` clean, `1` findings at/above `--fail-on` (default `error`) or sc
 
 honest-tests audits its own suite in CI (`npm run dogfood` → zero findings) and mutation-checks its own
 rules. While building v0.1, `mutate src/rules/asserts-on-mock.ts` scored **50%** against our first rule
-tests — the tool found the gaps in the tests for the tool. After adding the missing negative cases it's
-at 84%, and `never-failing-assertion.ts` is at 100%; the remaining survivors are near-equivalent mutants
-such as early-exit optimizations.
+tests — the tool found the gaps in the tests for the tool. After adding the missing negative cases it
+reached 84%. The rule has grown since, and in v0.2.0 it's at 80% (45 of 56 mutants killed), while
+`never-failing-assertion.ts` is at 100% (43 of 43). The remaining survivors are mostly near-equivalent
+mutants such as early-exit optimizations.
 
 ## Roadmap
 
