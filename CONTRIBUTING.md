@@ -24,7 +24,9 @@ src/adapters/js/         JS/TS parser (babel) -> TestFileModel, mutant generator
 src/adapters/python/     pytest adapter seam (planned)
 src/rules/               one file per rule; rules only read the TestFileModel
 src/mutate/runner.ts     temp-copy mutation runner
-src/report/              human + JSON output
+src/report/              human, JSON and SARIF output
+src/action/              GitHub Action entry point + PR comment (action.yml at the repo root)
+examples/                GitHub Action workflows
 skills/honest-tests/     the Agent Skill (SKILL.md + references/)
 commands/                Claude Code plugin slash commands
 integrations/            Codex AGENTS.md snippet, Cursor rule

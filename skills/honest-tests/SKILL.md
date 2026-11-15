@@ -80,7 +80,8 @@ npx @mintwork/honest-tests audit <path> --json > honest-tests.json
 ```
 
 The JSON contains `findings[]` with `ruleId`, `severity`, `file`, `line`, `column`, `test`, `message`,
-`evidence`, `fix`, plus a `summary`. If the CLI cannot be installed, use the manual grep checklist in
+`evidence`, `fix`, plus a `summary`. To audit only what a branch or PR changed, add
+`--changed origin/main`; the report then says how many tests the change adds and how many of those can't fail. If the CLI cannot be installed, use the manual grep checklist in
 [references/audit-procedure.md](references/audit-procedure.md#manual-fallback).
 
 Also look for smells the detector does not catch yet (see the "beyond the detector" list in
