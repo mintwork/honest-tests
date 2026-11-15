@@ -81,6 +81,8 @@ function githubApi(token: string, repo: string, issue: number): CommentApi {
   const api = env.GITHUB_API_URL ?? 'https://api.github.com';
   const headers = { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'content-type': 'application/json' };
   const call = async (method: string, url: string, body?: unknown) => {
+    // Only GitHub's API (GITHUB_API_URL on Enterprise): the PR comment this Action posts.
+    // nosemgrep
     const res = await fetch(url, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (!res.ok) throw new Error(`${method} ${url.replace(api, '')} -> ${res.status} ${(await res.text()).slice(0, 200)}`);
     return res;

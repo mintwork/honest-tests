@@ -16,6 +16,8 @@ function runInstrumented(code: string, tail: string): { result: unknown; hits: S
   const before = process.env[COVERAGE_ENV];
   process.env[COVERAGE_ENV] = out;
   try {
+    // Runs code this test just instrumented, to check its behaviour is unchanged.
+    // nosemgrep
     const result = new Function(`${code}\n${tail}`)();
     let text = '';
     try {
@@ -55,6 +57,7 @@ describe('coverage instrumentation', () => {
   it('keeps the code valid and its behavior unchanged', () => {
     const { code } = instrument('x.js', src);
     expect(() => parseSource('x.js', code)).not.toThrow();
+    // nosemgrep - evaluates the test's own fixture source
     const plain = new Function(`${src}\nreturn [size(11), size(3), twice(4)];`)();
     const { result } = runInstrumented(code, 'return [size(11), size(3), twice(4)];');
     expect(result).toEqual(plain);

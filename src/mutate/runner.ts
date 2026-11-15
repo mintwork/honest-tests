@@ -329,6 +329,8 @@ export function killRunningTests() {
 function runCommand(command: string, cwd: string, timeoutMs: number, extraPath: string[], extraEnv?: Record<string, string>): Promise<RunOutcome> {
   return new Promise((resolvePromise) => {
     const started = Date.now();
+    // The project's own test command (a shell string from its config), as the user would run it.
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true
     const child = spawn(command, {
       cwd,
       shell: true,

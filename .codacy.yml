@@ -1,0 +1,7 @@
+# Codacy: paths that don't ship to users.
+# - fixtures/: fake tests on purpose; they're what honest-tests is tested against.
+# - examples/: copy-paste workflows for users, which use the action's moving @v0 tag.
+exclude_paths:
+  - "fixtures/**"
+  - "examples/**"
+  - "scripts/demo-gif.mjs"
