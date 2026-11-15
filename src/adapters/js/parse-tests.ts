@@ -23,6 +23,7 @@ import {
   normText,
   parseSource,
   propName,
+  rootNames,
   stringValue,
   textOf,
   unwrap,
@@ -961,7 +962,7 @@ function scanAssertions(
   source: string,
   lines: string[],
   body: Node,
-  aliases: Map<string, string>,
+  aliases: Map<string, Alias>,
   vocab: AssertVocab = EMPTY_VOCAB,
   scope: ScanScope = {},
 ): AssertionScan {
@@ -972,7 +973,8 @@ function scanAssertions(
   let hasAssertionCountGuard = false;
 
   const withAlias = (info: ExprInfo): ExprInfo => {
-    if (info.kind === 'identifier' && aliases.has(info.text)) return { ...info, aliasCalleeText: aliases.get(info.text) };
+    const alias = info.kind === 'identifier' ? aliases.get(info.text) : undefined;
+    if (alias) return { ...info, aliasCalleeText: alias.callee, callArgRoots: alias.argRoots };
     return info;
   };
 
@@ -1126,12 +1128,18 @@ function isReferencedElsewhere(scope: Node, id: t.Identifier): boolean {
   return found;
 }
 
-function collectAliases(source: string, body: Node): Map<string, string> {
-  const aliases = new Map<string, string>();
+/** `const r = f(a)`: the call a local name holds. */
+interface Alias {
+  callee: string;
+  argRoots: string[];
+}
+
+function collectAliases(source: string, body: Node): Map<string, Alias> {
+  const aliases = new Map<string, Alias>();
   walk(body, (node) => {
     if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init) {
       const init = unwrap(node.init);
-      if (isCall(init)) aliases.set(node.id.name, normText(source, init.callee as Node));
+      if (isCall(init)) aliases.set(node.id.name, { callee: normText(source, init.callee as Node), argRoots: rootNames(init.arguments as Node[]) });
     }
   });
   return aliases;
@@ -1192,7 +1200,7 @@ function assertVocabulary(ast: t.File): AssertVocab {
 }
 
 /** Names declared by functions/variables anywhere in the file (imports excluded). */
-function declaredNames(ast: t.File): Set<string> {
+function declaredNames(ast: Node, withParams = false): Set<string> {
   const names = new Set<string>();
   const addPattern = (p: Node) => {
     if (p.type === 'Identifier') names.add(p.name);
@@ -1206,6 +1214,7 @@ function declaredNames(ast: t.File): Set<string> {
   walk(ast, (node) => {
     if (node.type === 'FunctionDeclaration' && node.id) names.add(node.id.name);
     if (node.type === 'VariableDeclarator') addPattern(node.id);
+    if (withParams && (isFunction(node) || node.type === 'FunctionDeclaration')) for (const p of node.params) addPattern(p as Node);
   });
   return names;
 }
@@ -1531,6 +1540,8 @@ export function parseJsTestFile(path: string, source: string): TestFileModel {
       continue;
     }
     tc.mockSetups = [...fileLevel.setups, ...scanMocks(source, fnBody, undefined, mockVocab).setups];
+    const declared = declaredNames(fn, true);
+    if (declared.size) tc.declaredNames = [...declared];
     const restores = scanRestores(source, fnBody, mockVocab);
     if (restores.length) tc.mockRestores = restores;
   }

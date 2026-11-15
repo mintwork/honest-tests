@@ -146,7 +146,94 @@ export function chainProps(node: Node): string[] {
   }
 }
 
+const ARITH_OPS = new Set(['+', '-', '*', '/', '%', '**']);
+
+/** Operators and root names of a plain numeric expression, or null if it is anything else. */
+export function arithmeticOf(raw: Node): ExprInfo['arithmetic'] | null {
+  const operators = new Set<string>();
+  const identifiers = new Set<string>();
+  let hasNumericLiteral = false;
+  const visit = (n0: Node): boolean => {
+    const n = unwrap(n0);
+    switch (n.type) {
+      case 'NumericLiteral':
+        hasNumericLiteral = true;
+        return true;
+      case 'Identifier':
+        if (n.name === 'undefined' || n.name === 'NaN' || n.name === 'Infinity') return false;
+        identifiers.add(n.name);
+        return true;
+      case 'MemberExpression':
+      case 'OptionalMemberExpression': {
+        const root = chainRoot(n);
+        if (root.type !== 'Identifier' || root.name === 'Math') return root.type === 'Identifier';
+        // only plain reads: no calls anywhere in the chain
+        let cur: Node = n;
+        while (isMember(cur)) {
+          if (cur.computed && !['NumericLiteral', 'StringLiteral', 'Identifier'].includes(cur.property.type)) return false;
+          cur = cur.object;
+        }
+        if (cur.type !== 'Identifier') return false;
+        identifiers.add(cur.name);
+        return true;
+      }
+      case 'UnaryExpression':
+        return (n.operator === '-' || n.operator === '+') && visit(n.argument);
+      case 'BinaryExpression':
+        if (!ARITH_OPS.has(n.operator) || n.left.type === 'PrivateName') return false;
+        operators.add(n.operator);
+        return visit(n.left as Node) && visit(n.right);
+      case 'CallExpression': {
+        const callee = n.callee as Node;
+        if (!isMember(callee) || callee.object.type !== 'Identifier' || callee.object.name !== 'Math') return false;
+        return (n.arguments as Node[]).every((a) => a.type !== 'SpreadElement' && visit(a));
+      }
+      default:
+        return false;
+    }
+  };
+  if (!visit(raw)) return null;
+  return { operators: [...operators], identifiers: [...identifiers], hasNumericLiteral };
+}
+
+/** Root names an expression reads (property keys and `Math` excluded). */
+export function rootNames(nodes: Node[]): string[] {
+  const out = new Set<string>();
+  for (const root of nodes) {
+    walk(root, (n, anc) => {
+      if (n.type !== 'Identifier') return undefined;
+      const parent = anc[anc.length - 1];
+      if (parent && isMember(parent) && parent.property === n && !parent.computed) return undefined;
+      if (parent && (parent.type === 'ObjectProperty' || parent.type === 'ObjectMethod') && parent.key === n && !parent.computed) return undefined;
+      if (n.name !== 'Math' && n.name !== 'undefined') out.add(n.name);
+      return undefined;
+    });
+  }
+  return [...out];
+}
+
+function decimalLiterals(node: Node): string[] {
+  const out: string[] = [];
+  walk(node, (n) => {
+    if (n.type !== 'NumericLiteral') return;
+    const raw = (n.extra as { raw?: string } | undefined)?.raw ?? String(n.value);
+    if (raw.includes('.')) out.push(raw);
+  });
+  return out;
+}
+
 export function describeExpr(source: string, raw: Node): ExprInfo {
+  const info = describeExprBase(source, raw);
+  const node = unwrap(raw);
+  if (isCall(node)) info.callArgRoots = rootNames(node.arguments as Node[]);
+  const arith = ['BinaryExpression', 'UnaryExpression', 'CallExpression'].includes(node.type) ? arithmeticOf(node) : null;
+  if (arith) info.arithmetic = arith;
+  const decimals = decimalLiterals(node);
+  if (decimals.length) info.decimalLiterals = decimals;
+  return info;
+}
+
+function describeExprBase(source: string, raw: Node): ExprInfo {
   const node = unwrap(raw);
   const text = normText(source, node);
   switch (node.type) {

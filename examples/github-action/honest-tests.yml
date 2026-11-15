@@ -1,0 +1,21 @@
+# .github/workflows/honest-tests.yml
+# Comments on every pull request: "This PR adds 12 tests — 4 can't fail."
+name: Honest tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write # create/update the PR comment
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the audit diffs against the merge base
+      - uses: mintwork/honest-tests@main # pin a release tag or commit SHA once one is published
+        with:
+          fail-on: error # fail when tests this PR adds or modifies can't fail (warning | never)

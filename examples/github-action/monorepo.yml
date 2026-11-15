@@ -1,0 +1,26 @@
+# .github/workflows/honest-tests.yml for a monorepo: audit several packages in one run, so the PR
+# gets one comment (the action updates a single comment per PR).
+name: Honest tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: mintwork/honest-tests@main
+        with:
+          paths: |
+            packages/core
+            packages/cli
+          ignore: |
+            **/fixtures/**
+            **/__snapshots__/**

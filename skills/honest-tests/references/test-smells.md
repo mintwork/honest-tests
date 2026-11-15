@@ -251,20 +251,99 @@ inflate the test count while verifying nothing. `skipIf/runIf` are not flagged.
 
 ---
 
+## reimplemented-algorithm (warning)
+
+```ts
+expect(total(price, qty)).toBe(price * qty * (1 + TAX)); // the code's formula, copied
+const r = offset(page);
+expect(r).toBe((page.number - 1) * page.size);
+```
+
+**Why it's weak:** the expected value is the unit's formula rewritten over the same inputs. If the
+formula is wrong (`1 - TAX`, an off-by-one in `page.number - 1`), the test computes the same wrong
+answer and passes.
+
+**Honest:** pick concrete inputs, work the answer out by hand, assert the literal:
+`expect(total(10, 3)).toBe(36)`.
+
+**Verify:** the rule fires only when the actual value is a call with arguments (directly or via
+`const r = f(...)`), the expected value is plain numeric arithmetic (`+ - * / % **`, `Math.*`, no
+strings, no other calls), and it reads one of the call's own inputs. Literal arithmetic
+(`toBe(100 - 20)`), relationships (`toBe(before.length + 1)`), `a + b` over names only (could be
+string concatenation) and expected values built from other functions are never flagged. A property-based
+test that compares against an *independent* reference implementation is fine: mark it `accepted`.
+
+---
+
+## oracle-copied-from-output (warning)
+
+```ts
+expect(quantile(prices, 0.5)).toEqual([2.9000000000000004, 3.2]);
+expect(cartTotal(items)).toBe(79.98999999999999);
+```
+
+**Why it's weak:** nobody derives `2.9000000000000004` by hand. The rounding noise shows the expected
+value was copied from a run of the code, so the test pins whatever the code computes today, bugs
+included, and breaks on any harmless change to the order of floating-point operations.
+
+**Honest:** derive the value independently and compare with a tolerance:
+`expect(quantile(prices, 0.5)[0]).toBeCloseTo(2.9, 10)`.
+
+**Verify:** the rule only looks for floats with rounding noise (12+ decimals, 13+ significant digits,
+ending in a run of zeros or nines plus a stray digit or two). Plain long decimals such as
+`14.142135623730951` aren't flagged (they may come from a reference table), nor are `toBeCloseTo`,
+negated assertions, round trips whose input contains the same digits (`parse('0.30000000000000004')`) or
+literal-only subjects. It can't see copied integers, strings or objects — check those manually. If the
+value comes from an external reference (NumPy, a spec's test vectors), mark it `accepted` and say so in
+a comment.
+
+---
+
+## weak-called-assertion (info; warning when it's the test's only kind of check)
+
+```ts
+const save = vi.fn();
+it('saves the order', () => {
+  submit(order, save);
+  expect(save).toHaveBeenCalledWith({ id: 1, total: 35 });
+});
+it('saves edited orders', () => {
+  submit(edit(order), save);
+  expect(save).toHaveBeenCalled(); // passes whatever was saved
+});
+```
+
+**Why it's weak:** `toHaveBeenCalled()` passes when the code calls the dependency with the wrong
+arguments. The other test proves the arguments are knowable and checkable.
+
+**Honest:** `expect(save).toHaveBeenCalledWith({ id: 1, total: 40 })` (or `expect.objectContaining`
+for the fields that matter).
+
+**Verify:** the rule only fires on mocks shared between tests (file-level, describe-level or imported
+module mocks) whose arguments another test checks (`toHaveBeenCalledWith(...)` with arguments,
+`mock.calls[0][0]`), and only when this test checks none of them. Mocks a test declares itself
+(`const onClose = vi.fn()`) are never matched against other tests by name, so most bare
+`toHaveBeenCalled()` calls are not flagged — check the rest manually. False positives: a test whose
+point is only *that* the call happens (the arguments are covered by the other test) — mark `accepted`.
+
+---
+
 ## Beyond the detector (check these manually in Phase 1)
 
 These are common in AI-written suites but need judgement:
 
 - **Oracle copied from output** — the expected literal was pasted from a run of the code (`toBe(79.99)`
   with no derivation). Ask: where did this number come from? Recompute it by hand.
+  `oracle-copied-from-output` only catches floats with rounding noise.
 - **Re-implemented algorithm** — the test computes the expected value with the same formula as the code
   (`expect(total).toBe(price * qty * (1 - d))`). Bugs in the formula are copied into the test.
+  `reimplemented-algorithm` only catches numeric formulas over the call's own inputs.
 - **Asserting irrelevant details** — tests pass/fail on log text or call order nobody depends on, while
   the business result is unchecked.
 - **Happy path only** — no boundary (`>=` vs `>`), empty input, or error path tests. Mutation testing
   exposes these as surviving `>=` → `>` mutants.
 - **Test name lies** — `'rejects invalid input'` but no invalid input is passed.
-- **Weak matchers everywhere** — `toBeDefined()`, `toBeTruthy()`, `toHaveBeenCalled()` (without args),
-  `expect.anything()` where an exact value is known.
+- **Weak matchers everywhere** — `toBeDefined()`, `toBeTruthy()`, `toHaveBeenCalled()` (without args;
+  `weak-called-assertion` only flags shared mocks), `expect.anything()` where an exact value is known.
 - **Assertion-free type tests** — `const x: Foo = make()` relies on the type checker, which test runners
   usually skip.

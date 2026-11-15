@@ -2,11 +2,13 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { audit, type AuditResult } from './core/engine.js';
+import { audit, selectRules, type AuditResult } from './core/engine.js';
+import { changedFiles, GitError, type ChangedFiles } from './core/git.js';
 import { mutate, MutationError, type MutationReport } from './mutate/runner.js';
 import { c } from './report/colors.js';
 import { formatAudit, formatMutation } from './report/human.js';
 import { toJson } from './report/json.js';
+import { toSarif } from './report/sarif.js';
 import { rules } from './rules/index.js';
 
 export const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -39,6 +41,9 @@ Usage
 
 Audit options
   --json                 Machine-readable output (findings with file/line/rule/severity/evidence)
+  --sarif                SARIF 2.1.0 output for GitHub code scanning (run from the repo root)
+  --changed <ref>        Only audit test files changed since the merge base with <ref> (e.g. origin/main),
+                         including uncommitted and untracked files; reports which tests were added
   -v, --verbose          Show fix advice for each finding
   --ignore <glob>        Ignore paths (repeatable), e.g. --ignore "fixtures/**"
   --rule <id>            Only run these rules (repeatable)
@@ -53,6 +58,10 @@ Mutation options
   --max-mutants <n>      Cap on mutants to run (default 100)
   --timeout <ms>         Per-run timeout (default: 4x baseline + 5s)
   --min-score <0-100>    Exit 1 if mutation score is below this (default: 0, report only)
+  --concurrency <n>      Mutants tested at once, each in its own project copy
+                         (default: half the CPU cores, 1-4; falls back to 1 if the suite isn't parallel-safe)
+  --coverage-map <mode>  auto (default: with 2+ related test files) | on | off. Runs each mutant only
+                         against the related test files that execute its line.
 
 Suppress a finding:   // honest-tests-disable-next-line <rule-id>`;
 
@@ -64,6 +73,8 @@ export async function run(argv: string[], io: IO): Promise<number> {
       allowPositionals: true,
       options: {
         json: { type: 'boolean' },
+        sarif: { type: 'boolean' },
+        changed: { type: 'string' },
         verbose: { type: 'boolean', short: 'v' },
         ignore: { type: 'string', multiple: true },
         rule: { type: 'string', multiple: true },
@@ -75,6 +86,8 @@ export async function run(argv: string[], io: IO): Promise<number> {
         'max-mutants': { type: 'string' },
         timeout: { type: 'string' },
         'min-score': { type: 'string' },
+        concurrency: { type: 'string' },
+        'coverage-map': { type: 'string' },
         dir: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean' },
@@ -119,13 +132,42 @@ export async function run(argv: string[], io: IO): Promise<number> {
     return 2;
   }
 
+  if (v.json && v.sarif) {
+    io.stderr('--json and --sarif are mutually exclusive.\n');
+    return 2;
+  }
+  if (v.changed !== undefined && command !== 'audit') {
+    io.stderr('--changed only applies to "honest-tests audit".\n');
+    return 2;
+  }
+  const machine = v.json || v.sarif;
+  const coverageMap = v['coverage-map'] ?? 'auto';
+  if (coverageMap !== 'auto' && coverageMap !== 'on' && coverageMap !== 'off') {
+    io.stderr(`--coverage-map must be auto, on or off.\n`);
+    return 2;
+  }
+  if (v.concurrency !== undefined && !/^[1-9]\d*$/.test(v.concurrency)) {
+    io.stderr(`--concurrency must be a whole number of at least 1.\n`);
+    return 2;
+  }
+
   let auditResult: AuditResult | null = null;
   let exit = 0;
   if (command === 'audit') {
-    auditResult = audit({ paths: rest, cwd: io.cwd, ignore: v.ignore, only: v.rule, disable: v.disable }, version());
+    let changed: ChangedFiles | undefined;
+    if (v.changed !== undefined) {
+      try {
+        changed = changedFiles(io.cwd, v.changed);
+      } catch (e) {
+        if (!(e instanceof GitError)) throw e;
+        io.stderr(c.red(`--changed: ${e.message}\n`));
+        return 2;
+      }
+    }
+    auditResult = audit({ paths: rest, cwd: io.cwd, ignore: v.ignore, only: v.rule, disable: v.disable, changed }, version());
     const { error, warning } = auditResult.summary;
     if ((failOn === 'error' && error > 0) || (failOn === 'warning' && error + warning > 0)) exit = 1;
-    if (!v.json) io.stdout(formatAudit(auditResult, { verbose: v.verbose }) + '\n');
+    if (!machine) io.stdout(formatAudit(auditResult, { verbose: v.verbose }) + '\n');
   }
 
   const target = command === 'mutate' ? rest[0] : v.mutate;
@@ -136,7 +178,7 @@ export async function run(argv: string[], io: IO): Promise<number> {
   let mutation: MutationReport | null = null;
   if (target) {
     const num = (s: string | undefined) => (s === undefined ? undefined : Number(s));
-    const showProgress = !v.json && io.progress;
+    const showProgress = !machine && io.progress;
     try {
       mutation = await mutate({
         target,
@@ -145,6 +187,8 @@ export async function run(argv: string[], io: IO): Promise<number> {
         testCmd: v['test-cmd'],
         maxMutants: num(v['max-mutants']),
         timeoutMs: num(v.timeout),
+        concurrency: num(v.concurrency),
+        coverageMap,
         onProgress: showProgress
           ? (done, total, r) => io.stderr(`\r  mutating ${target}: ${done}/${total} ${r.status === 'survived' ? c.red('survived') : c.green(r.status)}   `)
           : undefined,
@@ -157,12 +201,13 @@ export async function run(argv: string[], io: IO): Promise<number> {
       if (err.output) io.stderr(c.dim(excerpt(err.output)) + '\n');
       return 2;
     }
-    if (!v.json) io.stdout(formatMutation(mutation) + '\n');
+    if (!machine) io.stdout(formatMutation(mutation) + '\n');
     const minScore = num(v['min-score']) ?? 0;
     if (mutation.score < minScore) exit = 1;
   }
 
   if (v.json) io.stdout(toJson(auditResult, mutation) + '\n');
+  if (v.sarif) io.stdout(toSarif(auditResult, mutation, selectRules({ only: v.rule, disable: v.disable }), version(), io.cwd) + '\n');
   return exit;
 }
 

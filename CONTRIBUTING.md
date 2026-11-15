@@ -23,12 +23,16 @@ src/core/engine.ts       file discovery, rule execution, suppression comments
 src/adapters/js/         JS/TS parser (babel) -> TestFileModel, mutant generator
 src/adapters/python/     pytest adapter seam (planned)
 src/rules/               one file per rule; rules only read the TestFileModel
-src/mutate/runner.ts     temp-copy mutation runner
-src/report/              human + JSON output
+src/mutate/runner.ts     temp-copy mutation runner (parallel workers)
+src/mutate/coverage.ts   probes for the per-test-file coverage map
+src/report/              human, JSON and SARIF output
+src/action/              GitHub Action entry point + PR comment (action.yml at the repo root)
+examples/                GitHub Action workflows
 skills/honest-tests/     the Agent Skill (SKILL.md + references/)
 commands/                Claude Code plugin slash commands
 integrations/            Codex AGENTS.md snippet, Cursor rule
-fixtures/                bad-project (fake tests), good-project (honest tests), node-test-project, python-project
+fixtures/                bad-project (fake tests), good-project (honest tests), mapped-project
+                         (coverage map), node-test-project, python-project
 ```
 
 ## Adding a rule

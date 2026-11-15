@@ -14,10 +14,16 @@ npx @mintwork/honest-tests audit test/ --mutate src/pricing.ts --json   # both, 
 2. Copies the project to a temp directory (`node_modules` is symlinked, `.git` is skipped).
    **Your working tree is never written to.** The copy is deleted at the end, including on Ctrl-C.
 3. Runs the tests once unmutated (baseline). If they fail, it stops — fix the suite first.
-4. For each mutant: writes the mutated file into the copy, runs the tests, restores the file.
+4. For each mutant: writes the mutated file into a copy, runs the tests, restores the file. Mutants
+   run in parallel, one copy per worker (`--concurrency`, default half the cores, 1–4); if the
+   baseline fails when the copies run at once, it falls back to one worker.
+   With 2+ related test files, a coverage map first runs each test file against a probed copy of
+   the target; each mutant then runs only the test files that execute its statement.
    - tests fail → **killed** (good)
    - tests pass → **survived** (the tests don't check this behavior)
    - tests hang past the timeout → **timeout** (counted as killed)
+   - no related test executes it (`noCoverage: true`) → **survived** without a run: nothing tests
+     that line at all
 5. Reports the mutation score = (killed + timeout) / tested, and every survivor with its line.
 
 Default test command: the package's `test` script (or the `deno.json` `test` task), scoped to the related
@@ -64,6 +70,9 @@ equivalent, say so explicitly with a one-line reason — don't write a contrived
 
 - Target one file at a time: the one you just wrote tests for, or the riskiest module in the audit.
 - Cap long runs with `--max-mutants <n>`; use `--timeout <ms>` for slow suites.
+- Check the `notes` in the report: they say when parallel runs or the coverage map were turned off
+  and why. Use `--coverage-map off` if test files share module state (e.g. vitest `isolate: false`), since
+  a file run alone may then reach less code than it does alongside the others.
 - Gate CI with `--min-score 80` (exit 1 below the threshold).
 - A score of 100% does not mean the tests are perfect; it means every simple mutation was caught.
   A low score is very strong evidence that tests are fake.
