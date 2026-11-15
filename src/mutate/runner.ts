@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, type Dirent } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { delimiter, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { adapterFor } from '../adapters/index.js';
 import { resolveTestScript, scopedTestCommand } from '../adapters/js/index.js';
 import { DEFAULT_IGNORED_DIRS, discoverTestFiles } from '../core/engine.js';
 import type { LanguageAdapter, Mutant } from '../core/types.js';
+import { COVERAGE_ENV, instrument, LOADED_PROBE, parseHits, probeFor, type Instrumented } from './coverage.js';
 
 export type MutantStatus = 'killed' | 'survived' | 'timeout';
 
@@ -14,7 +15,13 @@ export interface MutantResult extends Mutant {
   /** Original source line, trimmed. */
   sourceLine: string;
   durationMs: number;
+  /** No related test file executes the mutated code (per the coverage map), so it survived without a run. */
+  noCoverage?: boolean;
+  /** The test files run for this mutant, when the coverage map narrowed them down. */
+  testFiles?: string[];
 }
+
+export type CoverageMapMode = 'auto' | 'on' | 'off';
 
 export interface MutateOptions {
   /** Source file to mutate. */
@@ -28,6 +35,13 @@ export interface MutateOptions {
   maxMutants?: number;
   /** Per-run timeout; default derived from the baseline run. */
   timeoutMs?: number;
+  /** Mutants tested at once, each in its own copy of the project. Default: {@link defaultConcurrency}. */
+  concurrency?: number;
+  /**
+   * Per-test-file coverage map: run each mutant only against the related test files that execute its
+   * line. `auto` (default) maps when there are 2+ related test files, `on` maps for 1+, `off` never.
+   */
+  coverageMap?: CoverageMapMode;
   onProgress?: (done: number, total: number, result: MutantResult) => void;
 }
 
@@ -44,7 +58,38 @@ export interface MutationReport {
   timedOut: number;
   /** 0-100, (killed + timeout) / tested. */
   score: number;
+  /** Mutants run in parallel (after the parallel-safety check). */
+  concurrency: number;
+  coverageMap: {
+    enabled: boolean;
+    /** Related test files whose probe output was usable. */
+    mappedTests: number;
+    /** Mutants that ran fewer test files than the full related set (including no-coverage ones). */
+    narrowed: number;
+    /** Mutants no related test file executes; reported as survived without a run. */
+    noCoverage: number;
+  };
+  /** Things the user should know: fallbacks, disabled features. */
+  notes: string[];
   mutants: MutantResult[];
+}
+
+/** Half the cores, 1–4: test runners start their own workers, and every mutant worker needs a project copy. */
+export function defaultConcurrency(): number {
+  return Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2)));
+}
+
+/** Run `job` for every item with at most `workers` in flight; `worker` is a stable slot index. */
+async function pool<T>(items: T[], workers: number, job: (item: T, worker: number) => Promise<void>, aborted: () => boolean): Promise<void> {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(workers, items.length)) }, async (_, worker) => {
+      while (next < items.length && !aborted()) {
+        const item = items[next++]!;
+        await job(item, worker);
+      }
+    }),
+  );
 }
 
 export class MutationError extends Error {
@@ -53,17 +98,6 @@ export class MutationError extends Error {
     public output = '',
   ) {
     super(message);
-  }
-}
-
-function findUp(start: string, name: string): string | null {
-  let dir = start;
-  for (;;) {
-    const candidate = join(dir, name);
-    if (existsSync(candidate)) return candidate;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
   }
 }
 
@@ -111,6 +145,31 @@ function sourceFiles(dir: string, exts: string[], out: string[] = []): string[] 
   return out;
 }
 
+/** A test file by name, or a `test/foo.js`-style candidate that contains tests (mocha, node:test). */
+function isTestSource(adapter: LanguageAdapter, file: string, src: string): boolean {
+  if (adapter.isTestFile(toPosix(file))) return true;
+  if (!adapter.isCandidateTestFile?.(toPosix(file))) return false;
+  try {
+    return adapter.parseTestFile(file, src).tests.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Files that mark a project root: package.json, or deno.json(c) for Deno projects without one. */
+const ROOT_MARKERS = ['package.json', 'deno.json', 'deno.jsonc'];
+
+function isProjectRoot(dir: string): boolean {
+  return ROOT_MARKERS.some((m) => existsSync(join(dir, m)));
+}
+
+function findProjectRoot(start: string): string | null {
+  for (let dir = start; ; dir = dirname(dir)) {
+    if (isProjectRoot(dir)) return dir;
+    if (dirname(dir) === dir) return null;
+  }
+}
+
 /**
  * Test files that import `target` directly or through other local modules
  * (`test -> Page.jsx -> lib/format.js`). Direct-import-only selection misses
@@ -122,6 +181,7 @@ export function findRelatedTests(root: string, target: string, adapter: Language
     return discoverTestFiles([root], root).filter((f) => adapter.testImportsTarget?.(f, readFileSync(f, 'utf8'), target));
   }
   const importers = new Map<string, string[]>();
+  const testFiles = new Set<string>();
   for (const file of sourceFiles(root, adapter.extensions)) {
     let src: string;
     try {
@@ -130,13 +190,14 @@ export function findRelatedTests(root: string, target: string, adapter: Language
       continue;
     }
     for (const id of new Set(adapter.localImports(file, src))) importers.set(id, [...(importers.get(id) ?? []), file]);
+    if (isTestSource(adapter, file, src)) testFiles.add(file);
   }
   const tests = new Set<string>();
   const seen = new Set<string>([adapter.moduleId(target)]);
   const queue = [...seen];
   while (queue.length) {
     for (const file of importers.get(queue.shift()!) ?? []) {
-      if (adapter.isTestFile(toPosix(file))) {
+      if (testFiles.has(file)) {
         tests.add(file);
         continue;
       }
@@ -226,7 +287,7 @@ function toPosix(p: string): string {
   return p.split(sep).join('/');
 }
 
-function cleanEnv(extraPath: string[]): NodeJS.ProcessEnv {
+function cleanEnv(extraPath: string[], extraEnv: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) {
     // Don't leak an outer vitest/jest worker context into the child run.
@@ -237,7 +298,8 @@ function cleanEnv(extraPath: string[]): NodeJS.ProcessEnv {
   env[pathKey] = [...extraPath, env[pathKey] ?? ''].join(delimiter);
   env.FORCE_COLOR = '0';
   env.NO_COLOR = '1';
-  return env;
+  delete env[COVERAGE_ENV];
+  return { ...env, ...extraEnv };
 }
 
 interface RunOutcome {
@@ -264,13 +326,13 @@ export function killRunningTests() {
   for (const child of running) killTree(child);
 }
 
-function runCommand(command: string, cwd: string, timeoutMs: number, extraPath: string[]): Promise<RunOutcome> {
+function runCommand(command: string, cwd: string, timeoutMs: number, extraPath: string[], extraEnv?: Record<string, string>): Promise<RunOutcome> {
   return new Promise((resolvePromise) => {
     const started = Date.now();
     const child = spawn(command, {
       cwd,
       shell: true,
-      env: cleanEnv(extraPath),
+      env: cleanEnv(extraPath, extraEnv),
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -330,33 +392,44 @@ export async function mutate(opts: MutateOptions): Promise<MutationReport> {
   if (!existsSync(target)) throw new MutationError(`Target file not found: ${opts.target}`);
   const adapter = adapterFor(target);
   if (!adapter?.generateMutants) throw new MutationError(`Mutation is not supported for ${opts.target} yet.`);
+  if (opts.concurrency !== undefined && !(Number.isInteger(opts.concurrency) && opts.concurrency >= 1)) {
+    throw new MutationError(`--concurrency must be a whole number of at least 1 (got ${opts.concurrency}).`);
+  }
 
-  const pkg = opts.root ? join(resolve(cwd, opts.root), 'package.json') : findUp(dirname(target), 'package.json');
-  if (!pkg || !existsSync(pkg)) throw new MutationError(`Could not find a package.json above ${opts.target}; pass --root.`);
-  const root = dirname(pkg);
+  const root = opts.root ? resolve(cwd, opts.root) : findProjectRoot(dirname(target));
+  if (!root || !isProjectRoot(root)) throw new MutationError(`Could not find a package.json (or deno.json) above ${opts.target}; pass --root.`);
   const relTarget = relative(root, target);
   if (relTarget.startsWith('..')) throw new MutationError(`Target ${opts.target} is outside project root ${root}.`);
 
   // Which tests exercise this file?
   const relatedTests = findRelatedTests(root, target, adapter).map((f) => toPosix(relative(root, f)));
 
-  let command = opts.testCmd ?? null;
-  if (command) {
-    command = command.replace('{files}', relatedTests.map(shellQuote).join(' '));
+  // `commandFor(files)` runs just those test files, or is null when the command can't be scoped.
+  let command: string;
+  let commandFor: (files: string[]) => string | null;
+  if (opts.testCmd) {
+    const template = opts.testCmd;
+    commandFor = template.includes('{files}') ? (files) => template.replace('{files}', files.map(shellQuote).join(' ')) : () => null;
+    command = template.replace('{files}', relatedTests.map(shellQuote).join(' '));
   } else {
-    command = adapter.defaultTestCommand?.(root) ?? null;
-    if (!command) throw new MutationError('Could not determine how to run tests (no "test" script in package.json). Pass --test-cmd "<command>".');
-    command = scopedTestCommand(resolveTestScript(root), relatedTests.map(shellQuote)) ?? command;
+    const fallback = adapter.defaultTestCommand?.(root) ?? null;
+    if (!fallback) throw new MutationError('Could not determine how to run tests (no "test" script in package.json or deno.json). Pass --test-cmd "<command>".');
+    const script = resolveTestScript(root);
+    commandFor = (files) => scopedTestCommand(script, files.map(shellQuote));
+    command = commandFor(relatedTests) ?? fallback;
   }
 
   const source = readFileSync(target, 'utf8');
   const all = adapter.generateMutants(target, source);
   const mutants = all.slice(0, opts.maxMutants ?? 100);
   const sourceLines = source.split(/\r?\n/);
+  const notes: string[] = [];
 
   const tmp = mkdtempSync(join(tmpdir(), 'honest-tests-'));
   const cleanup = () => rmSync(tmp, { recursive: true, force: true });
+  let aborted = false;
   const onSignal = (sig: NodeJS.Signals) => {
+    aborted = true;
     killRunningTests();
     cleanup();
     process.kill(process.pid, sig);
@@ -365,13 +438,12 @@ export async function mutate(opts: MutateOptions): Promise<MutationReport> {
   process.once('SIGTERM', onSignal);
 
   try {
-    const work = prepareCopy(root, tmp);
-    const tmpTarget = join(work, relTarget);
+    const works = [prepareCopy(root, join(tmp, 'w0'))];
     // Real bin dirs, not the symlinked copy: pnpm's .bin shims resolve paths relative to their own
     // location, and from inside the temp dir `../../node_modules/.pnpm` points nowhere.
     const extraPath = binPaths(root);
 
-    const baseline = await runCommand(command, work, opts.timeoutMs ?? 5 * 60_000, extraPath);
+    const baseline = await runCommand(command, works[0]!, opts.timeoutMs ?? 5 * 60_000, extraPath);
     if (baseline.code !== 0) {
       throw new MutationError(
         baseline.timedOut
@@ -380,21 +452,87 @@ export async function mutate(opts: MutateOptions): Promise<MutationReport> {
         baseline.output,
       );
     }
-    const timeoutMs = opts.timeoutMs ?? Math.max(10_000, baseline.durationMs * 4 + 5_000);
+    let slowest = baseline.durationMs;
 
-    const results: MutantResult[] = [];
-    for (const m of mutants) {
-      let outcome: RunOutcome;
-      try {
-        writeFileSync(tmpTarget, source.slice(0, m.start) + m.replacement + source.slice(m.end));
-        outcome = await runCommand(command, work, timeoutMs, extraPath);
-      } finally {
-        writeFileSync(tmpTarget, source);
-      }
-      const status: MutantStatus = outcome.timedOut ? 'timeout' : outcome.code === 0 ? 'survived' : 'killed';
-      const r: MutantResult = { ...m, file: toPosix(relative(cwd, target)), status, sourceLine: (sourceLines[m.line - 1] ?? '').trim(), durationMs: outcome.durationMs };
-      results.push(r);
-      opts.onProgress?.(results.length, mutants.length, r);
+    // Parallel runs must not see each other: a suite that binds a fixed port or shares a database
+    // would fail mutants that are really survivors, and inflate the score. Prove it with a parallel baseline.
+    let concurrency = Math.max(1, Math.min(opts.concurrency ?? defaultConcurrency(), mutants.length));
+    if (concurrency > 1) {
+      for (let w = 1; w < concurrency; w++) works.push(prepareCopy(root, join(tmp, `w${w}`)));
+      const parallel = await Promise.all(works.map((dir) => runCommand(command, dir, opts.timeoutMs ?? Math.max(60_000, baseline.durationMs * 10), extraPath)));
+      if (parallel.some((r) => r.code !== 0)) {
+        notes.push(
+          `Tests fail when ${concurrency} copies run at once (shared ports, files or services?); ran mutants one at a time. Pass --concurrency 1 to skip this check.`,
+        );
+        concurrency = 1;
+      } else slowest = Math.max(slowest, ...parallel.map((r) => r.durationMs));
+    }
+    const timeoutMs = opts.timeoutMs ?? Math.max(10_000, slowest * 4 + 5_000);
+
+    const writeTarget = (worker: number, text: string) => writeFileSync(join(works[worker]!, relTarget), text);
+
+    // Coverage map: which related test files execute which statements of the target.
+    const coverage = await mapCoverage({
+      mode: opts.coverageMap ?? 'auto',
+      target,
+      source,
+      relatedTests,
+      commandFor,
+      concurrency,
+      timeoutMs,
+      extraPath,
+      covDir: join(tmp, 'cov'),
+      writeTarget,
+      workDir: (w) => works[w]!,
+      notes,
+      aborted: () => aborted,
+    });
+
+    const results: MutantResult[] = new Array(mutants.length);
+    let done = 0;
+    let narrowed = 0;
+    let noCoverage = 0;
+    const report = (index: number, r: MutantResult) => {
+      results[index] = r;
+      done++;
+      opts.onProgress?.(done, mutants.length, r);
+    };
+    const base = (m: Mutant) => ({ ...m, file: toPosix(relative(cwd, target)), sourceLine: (sourceLines[m.line - 1] ?? '').trim() });
+
+    try {
+      await pool(
+        mutants.map((m, index) => ({ m, index })),
+        concurrency,
+        async ({ m, index }, worker) => {
+          const files = coverage ? coverage.testsFor(m) : null;
+          if (files && files.length < relatedTests.length) narrowed++;
+          if (files && files.length === 0) {
+            noCoverage++;
+            report(index, { ...base(m), status: 'survived', durationMs: 0, noCoverage: true, testFiles: [] });
+            return;
+          }
+          const cmd = files && files.length < relatedTests.length ? commandFor(files)! : command;
+          let outcome: RunOutcome;
+          try {
+            writeTarget(worker, source.slice(0, m.start) + m.replacement + source.slice(m.end));
+            outcome = await runCommand(cmd, works[worker]!, timeoutMs, extraPath);
+          } finally {
+            writeTarget(worker, source);
+          }
+          const status: MutantStatus = outcome.timedOut ? 'timeout' : outcome.code === 0 ? 'survived' : 'killed';
+          report(index, {
+            ...base(m),
+            status,
+            durationMs: outcome.durationMs,
+            ...(files && files.length < relatedTests.length ? { testFiles: files } : {}),
+          });
+        },
+        () => aborted,
+      );
+    } catch (e) {
+      aborted = true;
+      killRunningTests();
+      throw e;
     }
 
     const killed = results.filter((r) => r.status === 'killed').length;
@@ -412,6 +550,9 @@ export async function mutate(opts: MutateOptions): Promise<MutationReport> {
       survived,
       timedOut,
       score: results.length ? Math.round(((killed + timedOut) / results.length) * 1000) / 10 : 100,
+      concurrency,
+      coverageMap: { enabled: !!coverage, mappedTests: coverage?.mappedTests ?? 0, narrowed, noCoverage },
+      notes,
       mutants: results,
     };
   } finally {
@@ -419,4 +560,87 @@ export async function mutate(opts: MutateOptions): Promise<MutationReport> {
     process.removeListener('SIGTERM', onSignal);
     cleanup();
   }
+}
+
+interface CoverageInput {
+  mode: CoverageMapMode;
+  target: string;
+  source: string;
+  relatedTests: string[];
+  commandFor: (files: string[]) => string | null;
+  concurrency: number;
+  timeoutMs: number;
+  extraPath: string[];
+  covDir: string;
+  writeTarget: (worker: number, text: string) => void;
+  workDir: (worker: number) => string;
+  notes: string[];
+  aborted: () => boolean;
+}
+
+interface CoverageMap {
+  mappedTests: number;
+  /** Related test files that can kill `m`, in related-test order. */
+  testsFor(m: Mutant): string[];
+}
+
+/**
+ * Run each related test file alone against an instrumented copy of the target and record which
+ * statements it reaches. Returns null (and adds a note when it's surprising) when the map can't be
+ * trusted; mutants then run every related test file, as without a map.
+ */
+async function mapCoverage(o: CoverageInput): Promise<CoverageMap | null> {
+  const minTests = o.mode === 'on' ? 1 : 2;
+  if (o.mode === 'off' || o.relatedTests.length < minTests) return null;
+  const perFile = o.relatedTests.map((f) => o.commandFor([f]));
+  if (perFile.some((c) => c === null)) {
+    if (o.mode === 'on') o.notes.push('Coverage map needs a test command that takes test files (vitest/jest, or --test-cmd with {files}); ran every related test file per mutant.');
+    return null;
+  }
+  let inst: Instrumented;
+  try {
+    inst = instrument(o.target, o.source);
+  } catch (e) {
+    o.notes.push(`Coverage map off: could not instrument the target (${(e as Error).message}).`);
+    return null;
+  }
+  mkdirSync(o.covDir, { recursive: true });
+  for (let w = 0; w < o.concurrency; w++) o.writeTarget(w, inst.code);
+  const hits = new Map<string, Set<number>>();
+  let failed: string | null = null;
+  try {
+    await pool(
+      o.relatedTests.map((file, i) => ({ file, i })),
+      o.concurrency,
+      async ({ file, i }, worker) => {
+        if (failed) return;
+        const out = join(o.covDir, `${i}.txt`);
+        const r = await runCommand(perFile[i]!, o.workDir(worker), o.timeoutMs, o.extraPath, { [COVERAGE_ENV]: out });
+        if (r.code !== 0) failed = file;
+        hits.set(file, existsSync(out) ? parseHits(readFileSync(out, 'utf8')) : new Set());
+      },
+      o.aborted,
+    );
+  } finally {
+    for (let w = 0; w < o.concurrency; w++) o.writeTarget(w, o.source);
+  }
+  if (failed) {
+    o.notes.push(`Coverage map off: ${failed} fails when run alone or against the instrumented target; ran every related test file per mutant.`);
+    return null;
+  }
+  // A file without the load probe recorded nothing we can trust (no `process` in a browser/jsdom-only
+  // environment, Node < 22.3, another runtime): it counts as executing everything.
+  const mapped = new Set(o.relatedTests.filter((f) => hits.get(f)?.has(LOADED_PROBE)));
+  if (mapped.size === 0) {
+    o.notes.push('Coverage map off: the instrumented target recorded nothing (test processes need Node 22.3+); ran every related test file per mutant.');
+    return null;
+  }
+  return {
+    mappedTests: mapped.size,
+    testsFor(m) {
+      const probe = probeFor(m, inst);
+      if (probe === null) return o.relatedTests;
+      return o.relatedTests.filter((f) => !mapped.has(f) || hits.get(f)!.has(probe));
+    },
+  };
 }

@@ -5,8 +5,9 @@
 - Identify the test runner (`package.json` scripts, `vitest.config.*`, `jest.config.*`) and the test
   directories. Confirm the suite passes as-is: `npm test`. Mutation results are meaningless on a red
   suite.
-- Agree on scope with the user if the repo is large: a package, a directory, or the files touched by a
-  PR (`git diff --name-only main... | grep -E '\.(test|spec)\.'`).
+- Agree on scope with the user if the repo is large: a package, a directory, or the tests touched by a
+  PR: `npx @mintwork/honest-tests audit --changed origin/main` audits only test files changed since the
+  merge base (uncommitted and untracked files included) and says how many tests the change adds.
 
 ## Phase 1 — Detect
 
@@ -16,6 +17,8 @@ npx @mintwork/honest-tests audit <paths...> --json > honest-tests.json
 #   --ignore "fixtures/**"     skip paths (repeatable)
 #   --rule <id> / --disable <id>
 #   --fail-on warning|never     exit code policy (default: error)
+#   --changed origin/main       only test files changed on this branch
+#   --sarif                     SARIF 2.1.0 instead of JSON (GitHub code scanning)
 ```
 
 Output shape (`schemaVersion: 1`):
@@ -43,6 +46,8 @@ Output shape (`schemaVersion: 1`):
   ],
   "unsupported": [],   // test files that couldn't be analyzed, with a `reason` (e.g. no python3 for pytest files)
   "parseErrors": [],
+  "changed": { ... },  // with --changed: base, mergeBase, testFiles, testsAdded, testsModified,
+                       // suspiciousAdded, suspiciousModified; findings then carry "change": "added" | "modified"
   "mutation": { ... }  // present when --mutate was used
 }
 ```

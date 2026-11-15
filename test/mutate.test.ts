@@ -87,6 +87,30 @@ describe('mutate() on fixture projects', { timeout: 180_000 }, () => {
     expect(report.killed).toBe(3);
   });
 
+  it('runs node:test projects, finding test/*.js files that import the target', async () => {
+    const report = await mutate({ target: 'fixtures/node-test-project/src/pricing.js', cwd: ROOT });
+    expect(report.relatedTests).toEqual(['test/pricing.js', 'test/shipping.test.mjs']);
+    expect(report.command).toBe('npm test --silent -- test/pricing.js test/shipping.test.mjs');
+    expect(report.tested).toBe(16);
+    // the free-shipping threshold is never checked at its boundary
+    expect(report.mutants.filter((m) => m.status === 'survived').map((m) => `${m.line} ${m.original}->${m.replacement}`)).toEqual(['9 >=->>', '9 50->51']);
+  });
+
+  it('finds the project root of a Deno project by its deno.json', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ht-deno-root-'));
+    try {
+      writeFileSync(join(dir, 'deno.json'), JSON.stringify({ tasks: { test: 'deno test' } }));
+      writeFileSync(join(dir, 'mod.ts'), 'export const twice = (n: number) => n * 2;\n');
+      writeFileSync(join(dir, 'mod_test.ts'), "import { assertEquals } from 'jsr:@std/assert';\nimport { twice } from './mod.ts';\nDeno.test('twice', () => assertEquals(twice(2), 4));\n");
+      const report = await mutate({ target: join(dir, 'mod.ts'), cwd: dir, testCmd: 'node -e "" {files}', maxMutants: 1 });
+      expect(report.root).toBe('.');
+      expect(report.relatedTests).toEqual(['mod_test.ts']);
+      expect(report.command).toBe('node -e "" mod_test.ts');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects unsupported targets', async () => {
     const target = 'fixtures/python-project/app/pricing.py'; // Python mutation is not implemented yet
     expect(existsSync(resolve(ROOT, target))).toBe(true);
@@ -118,6 +142,43 @@ describe('test command for mutation runs (field-test regressions)', () => {
   it('follows `npm run x` delegation and runs the leaf script directly', () => {
     expect(withScripts({ test: 'npm run test:vitest', 'test:vitest': 'vitest run' }, ['t/a.test.js'])).toBe('vitest run t/a.test.js');
     expect(withScripts({ test: 'pnpm test:unit', 'test:unit': 'jest --ci' }, [])).toBe('jest --ci');
+  });
+
+  it('passes related test files to mocha and node --test', () => {
+    expect(withScripts({ test: 'mocha' }, ['test/a.js'])).toBe('npm test --silent -- test/a.js');
+    expect(withScripts({ test: 'npm run test:unit', 'test:unit': "mocha -r ts-node/register 'test/**/*.ts'" }, ['test/a.ts'])).toBe(
+      "mocha -r ts-node/register 'test/**/*.ts' test/a.ts",
+    );
+    expect(withScripts({ test: 'node --test' }, ['test/a.js'])).toBe('npm test --silent -- test/a.js');
+    expect(withScripts({ test: 'node --import tsx --test --test-reporter=spec' }, ['a.test.ts'])).toBe('npm test --silent -- a.test.ts');
+    expect(withScripts({ test: 'node --test-reporter=spec index.js' }, ['a.test.ts'])).toBeNull();
+  });
+
+  it('drops nyc / c8 wrappers so coverage thresholds do not fail subset runs', () => {
+    expect(withScripts({ test: 'nyc --reporter=lcov --check-coverage mocha' }, ['test/a.js'])).toBe('mocha test/a.js');
+    expect(withScripts({ test: 'c8 node --test' }, ['test/a.js'])).toBe('node --test test/a.js');
+  });
+
+  it('runs bun test directly, with ./ paths so bun treats them as files, not name filters', () => {
+    expect(withScripts({ test: 'bun test' }, ['test/a.test.ts', "'test/my file.test.ts'"])).toBe("bun test ./test/a.test.ts './test/my file.test.ts'");
+    expect(withScripts({ test: 'bun test --coverage && echo done' }, ['a.test.ts'])).toBeNull();
+  });
+
+  it('reads Deno tasks from deno.json / deno.jsonc and falls back to deno test', () => {
+    const withDeno = (name: string, text: string | null, files: string[]) => {
+      const dir = mkdtempSync(join(tmpdir(), 'ht-deno-'));
+      try {
+        if (text !== null) writeFileSync(join(dir, name), text);
+        return { cmd: scopedTestCommand(resolveTestScript(dir), files), fallback: jsAdapter.defaultTestCommand!(dir) };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    expect(withDeno('deno.json', JSON.stringify({ tasks: { test: 'deno test -A' } }), ['a_test.ts'])).toEqual({ cmd: 'deno test -A a_test.ts', fallback: 'deno task test' });
+    const jsonc = `{\n  // tasks\n  "imports": { "std/": "https://deno.land/std/" },\n  "tasks": { "test": { "command": "deno test --allow-read", }, },\n}`;
+    expect(withDeno('deno.jsonc', jsonc, ['a_test.ts'])).toEqual({ cmd: 'deno test --allow-read a_test.ts', fallback: 'deno task test' });
+    expect(withDeno('deno.json', '{}', ['a_test.ts'])).toEqual({ cmd: 'deno test a_test.ts', fallback: 'deno test' });
+    expect(withDeno('deno.json', null, ['a_test.ts'])).toEqual({ cmd: null, fallback: null });
   });
 
   it('does not extend chained or unknown scripts', () => {
@@ -201,11 +262,24 @@ describe('interrupting a mutation run (field-test regression)', { timeout: 60_00
       writeFileSync(join(dir, 'x.js'), 'export const one = () => 1;\n');
       const sleeper = `node -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setTimeout(() => {}, 60000)"`;
       const run = mutate({ target: join(dir, 'x.js'), cwd: dir, testCmd: sleeper });
-      for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
-      const pid = Number(readFileSync(pidFile, 'utf8'));
+      // Wait for the pid itself, not just the file: an empty read gives pid 0, and kill(0, 0) never throws.
+      const readPid = () => (existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : 0);
+      for (let i = 0; i < 200 && !(readPid() > 0); i++) await new Promise((r) => setTimeout(r, 50));
+      const pid = readPid();
+      expect(pid).toBeGreaterThan(0);
       killRunningTests();
       await expect(run).rejects.toThrow('Tests fail before any mutation');
-      expect(() => process.kill(pid, 0)).toThrow();
+      // The killed sleeper is orphaned and may linger briefly as a zombie until it's reaped.
+      const alive = () => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      for (let i = 0; i < 100 && alive(); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(alive()).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

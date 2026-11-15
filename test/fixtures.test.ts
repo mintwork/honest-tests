@@ -66,10 +66,29 @@ describe('fixture: good-project (honest tests)', () => {
   });
 });
 
+describe('fixture: node-test-project (node:test, mocha-style describe/it)', () => {
+  const result = audit({ paths: ['fixtures/node-test-project'], cwd: ROOT });
+
+  it('finds test/pricing.js by location (node:test and mocha default to test/) and the subtests in shipping.test.mjs', () => {
+    expect(result.filesScanned).toBe(2);
+    // 3 its + 2 subtests + 1 test; the parent of the subtests is a group
+    expect(result.testsScanned).toBe(6);
+  });
+
+  it('flags the unchecked subtest and the t.assert on a mock', () => {
+    expect(result.findings.map((f) => `${f.file.split('/').pop()}:${f.ruleId}@${f.line}`)).toEqual([
+      'shipping.test.mjs:no-assertions@9',
+      'shipping.test.mjs:asserts-on-mock@16',
+    ]);
+  });
+});
+
 describe('discovery', () => {
   it('honors --ignore globs', () => {
-    const result = audit({ paths: ['fixtures'], cwd: ROOT, ignore: ['fixtures/bad-project/**', '**/bad'] });
+    const result = audit({ paths: ['fixtures'], cwd: ROOT, ignore: ['fixtures/bad-project/**', 'fixtures/node-test-project/**', '**/bad'] });
     expect(result.findings).toEqual([]);
-    expect(result.filesScanned).toBe(3);
+    // good-project (2), mapped-project (3), python-project/tests/good (1)
+    expect(result.filesScanned).toBe(6);
+    expect(result.unsupported).toEqual([]);
   });
 });

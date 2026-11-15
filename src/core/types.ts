@@ -42,6 +42,23 @@ export interface ExprInfo {
   /** Built only from literals and test-local literal bindings (`{ a: 1 }`, `[x, 'y']`); implied by `ownLiteral`. */
   pureLiteral?: boolean;
   /**
+   * For calls (and identifiers aliasing a call, `const r = f(a)`): root names the arguments read,
+   * e.g. `total(cart.items, TAX)` -> `['cart', 'TAX']`.
+   */
+  callArgRoots?: string[];
+  /**
+   * Set when the expression is plain numeric arithmetic: `+ - * / % **`, unary minus, `Math.*` calls,
+   * numeric literals, identifiers and member reads, nothing else (no strings, no other calls).
+   */
+  arithmetic?: {
+    operators: string[];
+    /** Root names read (`item.price * qty` -> `['item', 'qty']`). */
+    identifiers: string[];
+    hasNumericLiteral: boolean;
+  };
+  /** Source spelling of every decimal number literal in the expression (`79.98999999999999`). */
+  decimalLiterals?: string[];
+  /**
    * The adapter knows this value is always truthy although its kind doesn't say so, e.g. Python's
    * `m.called_once_with(1)`: not a Mock assertion but an auto-created child mock.
    */
@@ -81,6 +98,8 @@ export interface AssertionContext {
    * Lets rules excuse type-narrowing guards whose condition was already asserted.
    */
   guards?: string[];
+  /** Inside a function nested in the test body (an event handler, a `.then` callback). */
+  inCallback?: boolean;
 }
 
 export interface Assertion {
@@ -134,6 +153,8 @@ export interface TestCase {
   hasAssertionCountGuard: boolean;
   /** Mocks configured inside this test (or in file-level setup visible to it). */
   mockSetups: MockSetup[];
+  /** Names the test body (or its parameters) declares: a `spy` here is not the `spy` of another test. */
+  declaredNames?: string[];
   /** Mock restores/resets inside this test body; a configured mock is inactive after one. */
   mockRestores?: MockRestore[];
 }
@@ -184,6 +205,8 @@ export interface Finding {
   test?: string;
   /** Short actionable advice. */
   fix: string;
+  /** `--changed` audits: the finding is in a test (or line) the change set adds or modifies. */
+  change?: 'added' | 'modified';
 }
 
 /** What a rule returns; the engine fills in ruleId/file/defaults. */
@@ -227,6 +250,11 @@ export interface LanguageAdapter {
   extensions: string[];
   /** True if `path` looks like a test file for this language. */
   isTestFile(path: string): boolean;
+  /**
+   * True if `path` may be a test file by location alone (`test/foo.js`, `test-foo.js`): it is audited
+   * only when it turns out to contain tests, and parse errors in it are ignored.
+   */
+  isCandidateTestFile?(path: string): boolean;
   /** Parse a test file into the language-neutral model. */
   parseTestFile(path: string, source: string): TestFileModel;
   /**

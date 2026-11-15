@@ -155,8 +155,38 @@ npx @mintwork/honest-tests init cursor     # writes .cursor/rules/honest-tests.m
 
 ```bash
 npx @mintwork/honest-tests audit . --json                 # machine-readable findings
+npx @mintwork/honest-tests audit . --sarif > ht.sarif     # SARIF 2.1.0 for GitHub code scanning
+npx @mintwork/honest-tests audit . --changed origin/main  # only test files this branch changed
 npx @mintwork/honest-tests mutate src/x.ts --min-score 80 # fail CI below 80% mutation score
 ```
+
+`--changed <ref>` audits the test files changed since the merge base with `<ref>`, including
+uncommitted and untracked files, and reports how many tests the change adds or modifies and how many
+of those can't fail (`changed` in the JSON; findings in changed tests carry `change: "added" | "modified"`).
+In CI, check out with enough history for the merge base (`actions/checkout` with `fetch-depth: 0`).
+Upload `--sarif` output with `github/codeql-action/upload-sarif`; run it from the repository root so
+paths line up.
+
+### GitHub Action
+
+Comment on every pull request with what its tests are worth — *"This PR adds 12 tests — 4 can't fail."*:
+
+```yaml
+on: pull_request
+permissions: { contents: read, pull-requests: write }
+jobs:
+  honest-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: mintwork/honest-tests@main   # "Honest Tests Audit"; pin a tag or SHA once released
+```
+
+It audits only the test files the PR changes, updates one comment per PR, writes the job summary and
+fails the step when a test the PR adds or modifies can't fail (`fail-on: error | warning | never`). It
+only parses test files and never runs your code. Code scanning, monorepo and other setups:
+[examples/](examples/README.md).
 
 ---
 
@@ -181,6 +211,16 @@ References the agent loads on demand: [test smell catalog](skills/honest-tests/r
 [audit procedure](skills/honest-tests/references/audit-procedure.md),
 [mutation testing](skills/honest-tests/references/mutation-testing.md).
 
+## Supported test runners
+
+| Runner | Recognized | `mutate` runs |
+| --- | --- | --- |
+| vitest, jest | `*.test.*`, `*.spec.*`, `__tests__/`, `vi`/`jest` mocks | `npm test -- <related files>` |
+| Mocha | `it`/`describe`/`context`/`specify`, chai, `this.skip()`, `done` callbacks, `test/*.js` | `mocha <related files>` (`nyc`/`c8` wrappers dropped) |
+| node:test | `test`/`t.test` subtests, `t.assert.*`, `{ skip/todo/only }`, `t.skip()`, `t.plan()`, `mock.fn`/`t.mock.method`, tap/tspl-style `t.equal`, `test/**`, `test-*.js` | `node --test <related files>` |
+| Bun | `bun:test` `expect`, `mock()`, `spyOn()`, `mock.module`, `test.if`/`skipIf`/`todo` | `bun test ./<related files>` |
+| Deno | `Deno.test` (all call shapes), `t.step`, `@std/assert`, `@std/expect`, `assertSnapshot`, `*_test.ts` | `deno test <related files>` (from the `deno.json` `test` task, or plain `deno test`) |
+
 ## Rules
 
 | Rule | Severity | Catches |
@@ -197,9 +237,13 @@ References the agent loads on demand: [test smell catalog](skills/honest-tests/r
 | `excessive-mocking` | warning | 5+ module mocks in one file |
 | `snapshot-only` | warning | The only assertion is a snapshot |
 | `conditional-assertion` | warning | Assertion behind `if` / `&&` / ternary |
+| `reimplemented-algorithm` | warning | Expected value recomputed from the call's own inputs: `expect(total(p, q)).toBe(p * q * 1.2)` |
+| `oracle-copied-from-output` | warning | Expected float carries rounding noise (`2.9000000000000004`), so it was copied from the code's output |
+| `weak-called-assertion` | info | Bare `toHaveBeenCalled()` on a shared mock whose arguments other tests check (warning when the test checks nothing else) |
 | `skipped-test` | warning | `.skip`, `xit`, `xdescribe` |
 
-Every rule also runs on **pytest** files (`test_*.py`, `*_test.py`): `assert` statements,
+Every rule except `reimplemented-algorithm`, `oracle-copied-from-output` and `weak-called-assertion`
+(JS/TS only for now) also runs on **pytest** files (`test_*.py`, `*_test.py`): `assert` statements,
 `pytest.raises`, `unittest` `self.assert*`, `Mock.assert_called_*`, `@pytest.mark.skip`, `patch` /
 `mocker.patch` / `monkeypatch.setattr` and syrupy snapshots map onto the same model. Python-only catches
 include `assert (x == 1, "msg")` (a tuple is always truthy) and `assert m.called_once_with(1)` (not a
@@ -232,22 +276,32 @@ it('loads', () => { require('../src/plugin'); });
 **Safe by design:** the project is copied to a temp dir (`node_modules` symlinked), mutants are written
 only to the copy and restored after every run, and the copy is removed at the end — even on Ctrl-C. A red
 baseline aborts the run. Only test files that import the target — directly or through other local
-modules — are run (vitest/jest), once and with coverage off, so it's fast: 26 mutants in ~12s on the
-fixture. Imports through path aliases (`@/lib/x`) aren't followed yet; pass `--test-cmd` if your tests
-reach the target that way.
+modules — are run (vitest, jest, mocha, `node --test`, `bun test`, `deno test`), once and with coverage
+off. Deno projects without a package.json are found by their `deno.json(c)`; if the tests need
+permissions the `test` task doesn't grant, pass `--test-cmd`. Imports through path aliases (`@/lib/x`)
+aren't followed yet; pass `--test-cmd` if your tests reach the target that way.
+
+**Fast:** mutants run in parallel, each worker in its own copy (default: half the cores, at most 4;
+26 mutants in ~4s on the fixture instead of ~9s). Before trusting parallel runs, the baseline runs in
+every copy at once; if that fails (fixed ports, a shared database), it falls back to one worker, so a
+suite that isn't parallel-safe can't inflate the score. With 2+ related test files, a **coverage map**
+runs each test file once against a probed copy of the target, and each mutant then runs only the test
+files that execute its statement; mutants no test executes are reported without a run.
 
 ```text
 --test-cmd "<cmd>"   custom command; {files} expands to related test files
 --max-mutants <n>    cap (default 100)          --timeout <ms>   per-run timeout
 --min-score <0-100>  exit 1 below this score    --root <dir>     project root
+--concurrency <n>    parallel workers           --coverage-map auto|on|off   (default auto)
 ```
 
 ## CLI reference
 
 ```text
-honest-tests audit [paths...]   [--json] [-v] [--ignore <glob>] [--rule <id>] [--disable <id>]
-                                [--fail-on error|warning|never] [--mutate <file> ...]
-honest-tests mutate <file>      [--json] [--test-cmd <cmd>] [--max-mutants <n>] [--min-score <n>]
+honest-tests audit [paths...]   [--json | --sarif] [-v] [--ignore <glob>] [--rule <id>] [--disable <id>]
+                                [--changed <ref>] [--fail-on error|warning|never] [--mutate <file> ...]
+honest-tests mutate <file>      [--json | --sarif] [--test-cmd <cmd>] [--max-mutants <n>] [--min-score <n>]
+                                [--concurrency <n>] [--coverage-map auto|on|off]
 honest-tests rules              [--json]
 honest-tests init <claude|codex|cursor> [--dir <repo>]
 ```
@@ -266,12 +320,13 @@ such as early-exit optimizations.
 
 ## Roadmap
 
-- [x] **pytest adapter** — audit pytest/unittest files with every rule ([src/adapters/python](src/adapters/python/index.ts)); Python mutation testing is next
-- [ ] Parallel mutant runs and per-test coverage mapping (run only tests that execute the mutated line)
-- [ ] SARIF output for GitHub code scanning; `--changed` mode for PR diffs
-- [ ] More rules: oracle copied from output, re-implemented algorithm in test, weak `toHaveBeenCalled()`
-- [ ] Mocha, node:test, Bun, Deno; Go and Rust adapters
-- [ ] GitHub Action with a PR comment: "this PR adds 12 tests, 4 can't fail"
+- [x] **pytest adapter** — audit pytest/unittest files with the rule engine ([src/adapters/python](src/adapters/python/index.ts)); Python mutation testing and the three newest rules for Python are next
+- [x] Parallel mutant runs and per-test coverage mapping (run only tests that execute the mutated line)
+- [x] SARIF output for GitHub code scanning; `--changed` mode for PR diffs
+- [x] More rules: oracle copied from output, re-implemented algorithm in test, weak `toHaveBeenCalled()`
+- [x] Mocha, node:test, Bun, Deno
+- [ ] Go and Rust adapters
+- [x] GitHub Action with a PR comment: "this PR adds 12 tests, 4 can't fail"
 
 ## Contributing
 

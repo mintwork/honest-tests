@@ -1,6 +1,6 @@
 ---
 name: honest-tests
-description: Write and audit tests that actually verify behavior instead of tests that merely pass. Use when writing, generating, reviewing or fixing unit tests (vitest, jest, pytest), when asked to "add tests", "increase coverage", "audit/review the tests", or before claiming a change is tested. Detects fake tests (tautological assertions, no assertions, asserting on mocks you configured or on literals the test just built, mocking the unit under test, snapshot-only tests, try/catch that swallows failures, assertions that can never fail, leftover .only/.skip) and proves weak tests with lightweight mutation testing via the `honest-tests` CLI.
+description: Write and audit tests that actually verify behavior instead of tests that merely pass. Use when writing, generating, reviewing or fixing unit tests (vitest, jest, mocha, node:test, bun, deno, pytest), when asked to "add tests", "increase coverage", "audit/review the tests", or before claiming a change is tested. Detects fake tests (tautological assertions, no assertions, asserting on mocks you configured or on literals the test just built, mocking the unit under test, snapshot-only tests, try/catch that swallows failures, assertions that can never fail, leftover .only/.skip) and proves weak tests with lightweight mutation testing via the `honest-tests` CLI.
 license: MIT
 metadata:
   version: "0.1.2"
@@ -80,12 +80,13 @@ npx @mintwork/honest-tests audit <path> --json > honest-tests.json
 ```
 
 The JSON contains `findings[]` with `ruleId`, `severity`, `file`, `line`, `column`, `test`, `message`,
-`evidence`, `fix`, plus a `summary`. If the CLI cannot be installed, use the manual grep checklist in
+`evidence`, `fix`, plus a `summary`. To audit only what a branch or PR changed, add
+`--changed origin/main`; the report then says how many tests the change adds and how many of those can't fail. If the CLI cannot be installed, use the manual grep checklist in
 [references/audit-procedure.md](references/audit-procedure.md#manual-fallback).
 
 Also look for smells the detector does not catch yet (see the "beyond the detector" list in
-[references/test-smells.md](references/test-smells.md)), e.g. expected values copied from output,
-tests that re-implement the algorithm, or assertions on irrelevant details.
+[references/test-smells.md](references/test-smells.md)), e.g. expected values copied from output or
+re-implemented formulas the narrow rules miss, or assertions on irrelevant details.
 
 ### Phase 2 — Verify each finding
 
@@ -138,7 +139,11 @@ without the user's agreement.
 | `excessive-mocking` | warning | 5+ module mocks in one file |
 | `snapshot-only` | warning | The only assertion is a snapshot |
 | `conditional-assertion` | warning | Assertion behind `if`/`&&`/ternary |
+| `reimplemented-algorithm` | warning | Expected value recomputed from the call's own inputs: `expect(total(p, q)).toBe(p * q * 1.2)` |
+| `oracle-copied-from-output` | warning | Expected float carries rounding noise (`2.9000000000000004`) — copied from the code's output |
+| `weak-called-assertion` | info/warning | Bare `toHaveBeenCalled()` on a shared mock whose arguments other tests check |
 | `skipped-test` | warning | `.skip`, `xit`, `xdescribe` |
 
-The same rules run on pytest/unittest files (`assert`, `pytest.raises`, `self.assert*`, `patch`, `Mock`);
-the CLI needs `python3` 3.9+ for those. Mutation testing is JS/TS only.
+The same rules run on pytest/unittest files (`assert`, `pytest.raises`, `self.assert*`, `patch`, `Mock`),
+except `reimplemented-algorithm`, `oracle-copied-from-output` and `weak-called-assertion` (JS/TS only for
+now; check those smells by hand in Python suites). The CLI needs `python3` 3.9+ for pytest files. Mutation testing is JS/TS only.
