@@ -8,6 +8,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`--sarif`**: SARIF 2.1.0 output for GitHub code scanning (`github/codeql-action/upload-sarif`).
+  Findings become results linked to their rule; with `--mutate` or `mutate`, surviving mutants are
+  reported as `surviving-mutant` warnings at the mutated line.
+- **`audit --changed <ref>`**: audit only the test files changed since the merge base with `<ref>`
+  (committed, uncommitted and untracked), and report how many tests the change adds or modifies and
+  how many of those can't fail. JSON output gains a `changed` summary and a `change` field on findings.
+- **GitHub Action "Honest Tests Audit"** (`action.yml`): audits the test files a pull request changes
+  and creates or updates one PR comment ("This PR adds 12 tests — 4 can't fail."), writes the job
+  summary, annotates findings, optionally writes SARIF, and fails on findings in added or modified
+  tests (`fail-on`). Static only: it never runs the repository's code. Usage in `examples/`.
+- Three new rules, tuned for precision on real projects (they miss cases rather than cry wolf):
+  - `reimplemented-algorithm` (warning): the expected value is numeric arithmetic over the call's own
+    inputs, e.g. `expect(total(p, q)).toBe(p * q * 1.2)`.
+  - `oracle-copied-from-output` (warning): the expected value is a float with rounding noise, e.g.
+    `2.9000000000000004`, so it was copied from the code's output.
+  - `weak-called-assertion` (info, or warning when the test checks nothing else): a bare
+    `toHaveBeenCalled()` on a shared mock whose arguments other tests in the file check.
 - **Parallel mutant runs:** `mutate --concurrency <n>` tests mutants in parallel, each worker in its
   own project copy. The default is half the CPU cores (1–4). The baseline also runs in every copy at
   once first; if that fails, the run falls back to one worker, so tests that share ports or services

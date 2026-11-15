@@ -8,10 +8,13 @@ import { focusedTest } from './focused-test.js';
 import { mockedUnitUnderTest } from './mocked-unit-under-test.js';
 import { neverFailingAssertion } from './never-failing-assertion.js';
 import { noAssertions } from './no-assertions.js';
+import { oracleCopiedFromOutput } from './oracle-copied-from-output.js';
+import { reimplementedAlgorithm } from './reimplemented-algorithm.js';
 import { skippedTest } from './skipped-test.js';
 import { snapshotOnly } from './snapshot-only.js';
 import { swallowedAssertion } from './swallowed-assertion.js';
 import { tautologicalAssertion } from './tautological-assertion.js';
+import { weakCalledAssertion } from './weak-called-assertion.js';
 
 export const rules: Rule[] = [
   noAssertions,
@@ -25,6 +28,9 @@ export const rules: Rule[] = [
   excessiveMocking,
   snapshotOnly,
   conditionalAssertion,
+  reimplementedAlgorithm,
+  oracleCopiedFromOutput,
+  weakCalledAssertion,
   focusedTest,
   skippedTest,
 ];

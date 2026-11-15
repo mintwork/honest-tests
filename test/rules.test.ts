@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { rules } from '../src/rules/index.js';
+import { looksLikePrintedFloat } from '../src/rules/oracle-copied-from-output.js';
 import { auditSource } from '../src/core/engine.js';
 import { HEADER, hits, scan } from './support.js';
 
@@ -516,6 +517,147 @@ describe('suppression comments', () => {
   it('only suppresses the listed rule', () => {
     const src = `// honest-tests-disable-next-line snapshot-only\nit('a', () => { run(); });`;
     expect(hits(src)).toEqual(['no-assertions@3']);
+  });
+});
+
+describe('reimplemented-algorithm', () => {
+  it('flags an expected value recomputed from the call inputs', () => {
+    const src = [
+      `it('a', () => {`,
+      `  expect(total(price, qty)).toBe(price * qty * (1 + TAX));`,
+      `  const r = total(price, qty);`,
+      `  expect(r).toBe(price * qty * 1.2);`,
+      `  assert.equal(area(w, h), w * h);`,
+      `  expect(offset(page)).toBe((page.number - 1) * page.size);`,
+      `  expect(dist(a, b)).toBe(Math.sqrt(a.x ** 2 + b.y ** 2));`,
+      `  expect(add(x, 1)).toBe(x + 1);`,
+      `});`,
+    ].join('\n');
+    expect(hits(src)).toEqual([3, 5, 6, 7, 8, 9].map((l) => `reimplemented-algorithm@${l}`));
+    const [f] = scan(src);
+    expect(f?.severity).toBe('warning');
+    expect(f?.message).toContain("recomputes `total`'s result from its own inputs (`price`, `qty`)");
+  });
+
+  it('leaves hand-derived values, relationships, strings and other calls alone', () => {
+    const src = [
+      `it('a', () => {`,
+      `  expect(total(10, 3)).toBe(10 * 3 * 1.2);`,
+      `  expect(after.length).toBe(before.length + 1);`,
+      `  expect(add(a, b)).toBe(a + b);`,
+      `  expect(greet(name)).toBe('Hi ' + name);`,
+      `  expect(scale(x)).toBe(other * 2);`,
+      `  expect(total(cart)).toBe(subtotal(cart) + tax(cart));`,
+      `  expect(double(x)).not.toBe(x * 3);`,
+      `  expect(Math.max(a, b)).toBe(a * 1);`,
+      `  expect(sum(xs)).toBeGreaterThan(xs * 2);`,
+      `  const r = x;`,
+      `  expect(r).toBe(x * 2);`,
+      `  expect(now()).toBe(start + 1000);`,
+      `  expect(f(x)).toBe(x);`,
+      `  expect(clamp(x, 5)).toBe(Math.min(x, 5));`,
+      `});`,
+    ].join('\n');
+    expect(hits(src)).toEqual([]);
+  });
+});
+
+describe('oracle-copied-from-output', () => {
+  it('flags expected floats that carry rounding noise', () => {
+    const src = [
+      `it('a', () => {`,
+      `  expect(quantile(arr, 0.5)).toEqual([2.9000000000000004, 3.2]);`,
+      `  expect(total(items)).toBe(79.98999999999999);`,
+      `  assert.strictEqual(sum(xs), 0.30000000000000004);`,
+      `  const r = mean(xs);`,
+      `  expect(r).toBe(3.2499999999999996);`,
+      `});`,
+    ].join('\n');
+    expect(hits(src)).toEqual([3, 4, 5, 7].map((l) => `oracle-copied-from-output@${l}`));
+    const [f] = scan(src);
+    expect(f?.severity).toBe('warning');
+    expect(f?.message).toContain('`2.9000000000000004` carries floating-point rounding noise');
+  });
+
+  it('leaves tolerant matchers, reference values, round trips and constants alone', () => {
+    const src = [
+      `it('a', () => {`,
+      `  expect(sum(xs)).toBeCloseTo(0.30000000000000004);`,
+      `  expect(distance(a, b)).toBe(14.142135623730951);`,
+      `  expect(0.1 + 0.2).toBe(0.30000000000000004);`,
+      `  expect(parse('0.30000000000000004')).toBe(0.30000000000000004);`,
+      `  expect(f()).toBe(1.500000000000);`,
+      `  expect(f()).not.toBe(0.30000000000000004);`,
+      `  expect(tiny()).toBe(0.000000000001234);`,
+      `  expect(f()).toBe(79.99);`,
+      `});`,
+    ].join('\n');
+    expect(hits(src)).toEqual([]);
+  });
+
+  it('recognizes the printed-float shape', () => {
+    expect(['0.30000000000000004', '79.98999999999999', '3.2499999999999996', '1.1000000000000001e-7', '1.300000000004'].map(looksLikePrintedFloat)).toEqual([
+      true, true, true, true, true,
+    ]);
+    // 11 decimals; 9 significant digits; no noise; padded zeros; tiny hand-typed; integer
+    expect(
+      ['12345.30000000004', '0.0000000300000004', '14.142135623730951', '0.6666666666666666', '1.500000000000', '0.000000000001234', '12'].map(looksLikePrintedFloat),
+    ).toEqual([false, false, false, false, false, false, false]);
+  });
+});
+
+describe('weak-called-assertion', () => {
+  const shared = (b: string) =>
+    [
+      `const save = vi.fn();`,
+      `it('saves the order', () => {`,
+      `  submit(order, save);`,
+      `  expect(save).toHaveBeenCalledWith({ id: 1 });`,
+      `});`,
+      `it('saves again', () => {`,
+      b,
+      `});`,
+    ].join('\n');
+
+  it('flags a bare toHaveBeenCalled on a shared mock whose arguments another test checks', () => {
+    expect(hits(shared(`  submit(other, save);\n  expect(save).toHaveBeenCalled();`))).toEqual(['weak-called-assertion@9']);
+    const [only] = scan(shared(`  submit(other, save);\n  expect(save).toBeCalled();`));
+    expect(only?.severity).toBe('warning');
+    expect(only?.message).toContain('Only checks that `save` was called, not with what');
+    const [hint] = scan(shared(`  expect(submit(other, save)).toBe(true);\n  expect(save).toHaveBeenCalled();`));
+    expect(hint?.severity).toBe('info');
+  });
+
+  it('accepts vi.mocked(...) and mock.calls reads as evidence', () => {
+    const src = [
+      `it('a', () => { load(); expect(vi.mocked(api.get)).toHaveBeenCalledWith('/x'); });`,
+      `it('b', () => { load(); expect(api.get).toHaveBeenCalled(); });`,
+      `it('c', () => { load(); expect(store.put.mock.calls[0][0]).toEqual({ a: 1 }); });`,
+      `it('d', () => { load(); expect(vi.mocked(store.put)).toHaveBeenCalled(); });`,
+    ].join('\n');
+    expect(hits(src)).toEqual(['weak-called-assertion@3', 'weak-called-assertion@5']);
+  });
+
+  it('does not flag local mocks, negations, argument checks or mocks without argument evidence', () => {
+    const src = [
+      `it('a', () => { const spy = vi.fn(); run(spy); expect(spy).toHaveBeenCalledWith(1); });`,
+      `it('b', () => { const spy = vi.fn(); run(spy); expect(spy).toHaveBeenCalled(); });`,
+      `it('c', () => { run(); expect(api.get).toHaveBeenCalledWith('/x'); });`,
+      `it('d', () => { run(); expect(api.get).not.toHaveBeenCalled(); });`,
+      `it('e', () => { run(); expect(api.get).toHaveBeenCalled(); expect(api.get.mock.calls[0][0]).toBe('/x'); });`,
+      `it('f', () => { run(); expect(api.get).toHaveBeenCalledTimes(1); });`,
+      `it('g', () => { run(); expect(onClose).toHaveBeenCalled(); });`,
+      `it('h', () => { run(); expect(log).toHaveBeenCalledWith(); expect(log.mock.calls.length).toBe(1); });`,
+      `it('i', () => { run(); expect(log).toHaveBeenCalled(); });`,
+      `it('j', (spy) => { run(spy); expect(spy).toHaveBeenCalled(); });`,
+      `it('k', () => { run(); expect(api.get).toHaveBeenCalledOnce(); });`,
+      `it('l', () => { run(); expect(db.put).not.toHaveBeenCalledWith(1); });`,
+      `it('m', () => { run(); expect(db.put).toHaveBeenCalled(); });`,
+      // a save declared inside test n says nothing about the shared save in test o
+      `it('n', () => { const save = vi.fn(); run(save); expect(save).toHaveBeenCalledWith(1); });`,
+      `it('o', () => { run(); expect(save).toHaveBeenCalled(); });`,
+    ].join('\n');
+    expect(hits(src)).toEqual([]);
   });
 });
 

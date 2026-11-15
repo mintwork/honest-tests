@@ -1,0 +1,28 @@
+name: Honest Tests Audit
+
+# Dogfood the action from this checkout on every PR to this repository.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  audit:
+    # Fork PRs get a read-only token; the action then only writes the job summary.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: honest
+        uses: ./
+        with:
+          ignore: fixtures/**
+          sarif-file: honest-tests.sarif
+      - name: Check the action's outputs
+        run: |
+          test -s "${{ steps.honest.outputs.report }}"
+          test -s "${{ steps.honest.outputs.sarif-file }}"
+          echo "added=${{ steps.honest.outputs.tests-added }} cant-fail=${{ steps.honest.outputs.cant-fail-added }}"

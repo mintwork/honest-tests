@@ -41,6 +41,23 @@ export interface ExprInfo {
   ownLiteral?: { name: string; line: number };
   /** Built only from literals and test-local literal bindings (`{ a: 1 }`, `[x, 'y']`); implied by `ownLiteral`. */
   pureLiteral?: boolean;
+  /**
+   * For calls (and identifiers aliasing a call, `const r = f(a)`): root names the arguments read,
+   * e.g. `total(cart.items, TAX)` -> `['cart', 'TAX']`.
+   */
+  callArgRoots?: string[];
+  /**
+   * Set when the expression is plain numeric arithmetic: `+ - * / % **`, unary minus, `Math.*` calls,
+   * numeric literals, identifiers and member reads, nothing else (no strings, no other calls).
+   */
+  arithmetic?: {
+    operators: string[];
+    /** Root names read (`item.price * qty` -> `['item', 'qty']`). */
+    identifiers: string[];
+    hasNumericLiteral: boolean;
+  };
+  /** Source spelling of every decimal number literal in the expression (`79.98999999999999`). */
+  decimalLiterals?: string[];
 }
 
 /** Normalized intent of an assertion matcher, independent of framework spelling. */
@@ -129,6 +146,8 @@ export interface TestCase {
   hasAssertionCountGuard: boolean;
   /** Mocks configured inside this test (or in file-level setup visible to it). */
   mockSetups: MockSetup[];
+  /** Names the test body (or its parameters) declares: a `spy` here is not the `spy` of another test. */
+  declaredNames?: string[];
   /** Mock restores/resets inside this test body; a configured mock is inactive after one. */
   mockRestores?: MockRestore[];
 }
@@ -174,6 +193,8 @@ export interface Finding {
   test?: string;
   /** Short actionable advice. */
   fix: string;
+  /** `--changed` audits: the finding is in a test (or line) the change set adds or modifies. */
+  change?: 'added' | 'modified';
 }
 
 /** What a rule returns; the engine fills in ruleId/file/defaults. */
