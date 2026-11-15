@@ -11,7 +11,7 @@ permissions:
 jobs:
   audit:
     # Fork PRs get a read-only token; the action then only writes the job summary.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
         with:
