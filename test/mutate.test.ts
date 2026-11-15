@@ -262,11 +262,24 @@ describe('interrupting a mutation run (field-test regression)', { timeout: 60_00
       writeFileSync(join(dir, 'x.js'), 'export const one = () => 1;\n');
       const sleeper = `node -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setTimeout(() => {}, 60000)"`;
       const run = mutate({ target: join(dir, 'x.js'), cwd: dir, testCmd: sleeper });
-      for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
-      const pid = Number(readFileSync(pidFile, 'utf8'));
+      // Wait for the pid itself, not just the file: an empty read gives pid 0, and kill(0, 0) never throws.
+      const readPid = () => (existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : 0);
+      for (let i = 0; i < 200 && !(readPid() > 0); i++) await new Promise((r) => setTimeout(r, 50));
+      const pid = readPid();
+      expect(pid).toBeGreaterThan(0);
       killRunningTests();
       await expect(run).rejects.toThrow('Tests fail before any mutation');
-      expect(() => process.kill(pid, 0)).toThrow();
+      // The killed sleeper is orphaned and may linger briefly as a zombie until it's reaped.
+      const alive = () => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      for (let i = 0; i < 100 && alive(); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(alive()).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
