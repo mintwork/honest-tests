@@ -3,7 +3,7 @@ name: honest-tests
 description: Write and audit tests that actually verify behavior instead of tests that merely pass. Use when writing, generating, reviewing or fixing unit tests (vitest, jest, mocha, node:test, bun, deno, pytest), when asked to "add tests", "increase coverage", "audit/review the tests", or before claiming a change is tested. Detects fake tests (tautological assertions, no assertions, asserting on mocks you configured or on literals the test just built, mocking the unit under test, snapshot-only tests, try/catch that swallows failures, assertions that can never fail, leftover .only/.skip) and proves weak tests with lightweight mutation testing via the `honest-tests` CLI.
 license: MIT
 metadata:
-  version: "0.1.2"
+  version: "0.2.0"
   cli: "npx @mintwork/honest-tests"
 ---
 
@@ -133,16 +133,16 @@ without the user's agreement.
 | `asserts-on-own-literal` | error | Asserting on a literal the test just built (`const p = { service: 's3' }; expect(p.service).toBe('s3')`) — typical of runtime "type tests" |
 | `never-failing-assertion` | error | `expect(x).toBeTruthy` (no call), bare `expect(x)`, un-awaited `.resolves`, `typeof x` "defined", `length >= 0` |
 | `swallowed-assertion` | error | Assertion inside `try` whose `catch` doesn't rethrow |
-| `catch-only-assertion` | error | Assertions only in `catch` — passes when nothing throws |
-| `mocked-unit-under-test` | error | `vi.mock('./cart')` in `cart.test.ts`; spying on and replacing the unit's exports |
+| `catch-only-assertion` | error (warning if it also asserts outside the `catch`) | Assertions only in `catch` — passes when nothing throws |
+| `mocked-unit-under-test` | error (warning for partial mocks) | `vi.mock('./cart')` in `cart.test.ts`; spying on and replacing the unit's exports |
 | `focused-test` | error | `.only`, `fit`, `fdescribe` |
 | `excessive-mocking` | warning | 5+ module mocks in one file |
 | `snapshot-only` | warning | The only assertion is a snapshot |
 | `conditional-assertion` | warning | Assertion behind `if`/`&&`/ternary |
 | `reimplemented-algorithm` | warning | Expected value recomputed from the call's own inputs: `expect(total(p, q)).toBe(p * q * 1.2)` |
 | `oracle-copied-from-output` | warning | Expected float carries rounding noise (`2.9000000000000004`) — copied from the code's output |
-| `weak-called-assertion` | info/warning | Bare `toHaveBeenCalled()` on a shared mock whose arguments other tests check |
 | `skipped-test` | warning | `.skip`, `xit`, `xdescribe` |
+| `weak-called-assertion` | info (warning if the test checks nothing else) | Bare `toHaveBeenCalled()` on a shared mock whose arguments other tests check |
 
 The same rules run on pytest/unittest files (`assert`, `pytest.raises`, `self.assert*`, `patch`, `Mock`),
 except `reimplemented-algorithm`, `oracle-copied-from-output` and `weak-called-assertion` (JS/TS only for

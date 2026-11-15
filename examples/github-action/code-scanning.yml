@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
       - id: honest
-        uses: mintwork/honest-tests@main # pin a release tag or commit SHA once one is published
+        uses: mintwork/honest-tests@v0
         with:
           paths: src, test
           ignore: fixtures/**

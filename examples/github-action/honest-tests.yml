@@ -16,6 +16,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the audit diffs against the merge base
-      - uses: mintwork/honest-tests@main # pin a release tag or commit SHA once one is published
+      - uses: mintwork/honest-tests@v0
         with:
           fail-on: error # fail when tests this PR adds or modifies can't fail (warning | never)

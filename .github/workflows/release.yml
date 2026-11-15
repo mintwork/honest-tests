@@ -55,6 +55,13 @@ jobs:
             npm publish --access public
           fi
 
+      # The GitHub Action is consumed as @v0; keep that tag on the latest release.
+      - name: Move v0 tag to this release
+        if: github.event_name == 'release'
+        run: |
+          git tag -f v0 "$GITHUB_SHA"
+          git push -f origin v0
+
       # Agensi (agensi.io) has no CI publishing API, so the release carries a ready-to-upload
       # package: upload it in Creator Studio, or ask an agent connected to Agensi to update_skill.
       - name: Build Agensi package

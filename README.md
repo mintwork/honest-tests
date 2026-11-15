@@ -9,7 +9,7 @@ fake tests — and proves which of your existing tests are fake by mutating your
 stay green.
 
 <p align="center">
-  <img src="docs/demo.gif" width="1200" alt="honest-tests audit finds 11 of 15 tests that can't fail in a sample project; honest-tests mutate then shows 22 of 26 code changes survive the test suite, a 15.4% mutation score">
+  <img src="docs/demo.gif" width="1200" alt="honest-tests audit finds 11 of 15 tests that can't fail in a sample project (13 errors, 3 warnings); honest-tests mutate then shows 22 of 26 code changes survive the test suite, a 15.4% mutation score">
 </p>
 
 ```bash
@@ -77,7 +77,9 @@ $ npx @mintwork/honest-tests mutate src/pricing.ts
   22 mutants survived — your tests don't actually check these lines:
 
   src/pricing.ts:15  if (percent < 0 || percent > 100) {
+      ✗ condition `percent < 0 || percent > 100` → `false`
       ✗ `<` → `<=`
+      ✗ `0` → `1`
       ✗ `||` → `&&`
       ✗ `>` → `>=`
       ✗ `100` → `101`
@@ -85,6 +87,10 @@ $ npx @mintwork/honest-tests mutate src/pricing.ts
   src/pricing.ts:22  return isMember || total >= 50;
       ✗ `>=` → `>`
       ✗ `50` → `51`
+
+  src/pricing.ts:27  return 0;
+      ✗ return value replaced with `undefined` (no test executes this line)
+      ✗ `0` → `1` (no test executes this line)
   ...
 
   Mutation score: 15.4% (4 killed, 0 timed out, 22 survived of 26; baseline 0.5s)
@@ -164,29 +170,74 @@ npx @mintwork/honest-tests mutate src/x.ts --min-score 80 # fail CI below 80% mu
 uncommitted and untracked files, and reports how many tests the change adds or modifies and how many
 of those can't fail (`changed` in the JSON; findings in changed tests carry `change: "added" | "modified"`).
 In CI, check out with enough history for the merge base (`actions/checkout` with `fetch-depth: 0`).
-Upload `--sarif` output with `github/codeql-action/upload-sarif`; run it from the repository root so
-paths line up.
+`--sarif` writes SARIF 2.1.0 (findings, plus surviving mutants as `surviving-mutant` warnings when
+mutation runs); upload it with `github/codeql-action/upload-sarif`, and run it from the repository root
+so paths line up. On GitHub, the [Action](#github-action-honest-tests-audit) below wraps all of this.
 
-### GitHub Action
+---
 
-Comment on every pull request with what its tests are worth — *"This PR adds 12 tests — 4 can't fail."*:
+## GitHub Action: Honest Tests Audit
+
+Comment on every pull request with what its tests are worth:
 
 ```yaml
+# .github/workflows/honest-tests.yml
+name: Honest tests
 on: pull_request
-permissions: { contents: read, pull-requests: write }
+permissions:
+  contents: read
+  pull-requests: write # create/update the PR comment
 jobs:
-  honest-tests:
+  audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with: { fetch-depth: 0 }
-      - uses: mintwork/honest-tests@main   # "Honest Tests Audit"; pin a tag or SHA once released
+        with:
+          fetch-depth: 0 # the audit diffs against the merge base
+      - uses: mintwork/honest-tests@v0
 ```
 
-It audits only the test files the PR changes, updates one comment per PR, writes the job summary and
-fails the step when a test the PR adds or modifies can't fail (`fail-on: error | warning | never`). It
-only parses test files and never runs your code. Code scanning, monorepo and other setups:
-[examples/](examples/README.md).
+The PR gets one comment, updated on every push:
+
+> ### Honest Tests Audit
+>
+> **This PR adds 12 tests — 4 can't fail.**
+>
+> | Severity | Change | Test | Finding | Location |
+> | --- | --- | --- | --- | --- |
+> | error | added | applies a discount | Assertion is inside a try/catch that swallows errors … `swallowed-assertion` | `test/pricing.test.ts:39` |
+
+Findings in untouched tests of the same files are listed in a collapsed section; they never fail the
+step. A PR that changes no test files gets no new comment. The same report goes to the job summary,
+and the findings that fail the step are also annotated on the diff.
+
+- **What it does:** runs `audit --changed` against the PR's base commit (or the previous commit on
+  `push`). It builds the CLI from the action's own ref (Node 22+; it sets up Node 24 if the runner has
+  an older one). It only parses test files: it never installs your dependencies or runs your code or
+  tests.
+- **Permissions:** `contents: read` and `pull-requests: write` for the comment. With `sarif-file` and
+  `github/codeql-action/upload-sarif`, add `security-events: write`.
+- **Forks:** pull requests from forks get a read-only token, so the comment is skipped with a warning;
+  the job summary, annotations and `fail-on` still work.
+- **History:** use `fetch-depth: 0`. With a shallow checkout the action fetches the missing history
+  itself, which is slower.
+
+| Input | Default | |
+| --- | --- | --- |
+| `base` | PR base commit / previous commit | Ref or SHA to compare against |
+| `paths` | `.` | Paths to audit, comma- or newline-separated, relative to `working-directory` |
+| `ignore` | | Globs to ignore, e.g. `fixtures/**` |
+| `working-directory` | `.` | Directory to run in (a package in a monorepo) |
+| `fail-on` | `error` | `error`, `warning` or `never`; only findings in tests the PR adds or modifies count |
+| `comment` | `true` | Create or update the PR comment |
+| `sarif-file` | | Also write SARIF to this path, for `upload-sarif` |
+| `github-token` | `github.token` | Token for the comment |
+
+Outputs: `tests-added`, `tests-modified`, `cant-fail-added`, `cant-fail-modified` (tests with an
+error-level finding), `findings`, `report` (path of the JSON report) and `sarif-file`.
+
+`@v0` follows the latest 0.x release; pin `@v0.2.0` or a commit SHA for a fixed version. Code
+scanning, monorepo and other setups: [examples/](examples/README.md).
 
 ---
 
@@ -211,7 +262,12 @@ References the agent loads on demand: [test smell catalog](skills/honest-tests/r
 [audit procedure](skills/honest-tests/references/audit-procedure.md),
 [mutation testing](skills/honest-tests/references/mutation-testing.md).
 
-## Supported test runners
+## Supported languages and test runners
+
+- **JavaScript / TypeScript** (`.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.mts`, `.cts`): every rule,
+  plus mutation testing.
+- **Python** (pytest and unittest): every rule except three (see [Rules](#rules)); no mutation testing yet.
+  Needs `python3` 3.9+.
 
 | Runner | Recognized | `mutate` runs |
 | --- | --- | --- |
@@ -220,6 +276,7 @@ References the agent loads on demand: [test smell catalog](skills/honest-tests/r
 | node:test | `test`/`t.test` subtests, `t.assert.*`, `{ skip/todo/only }`, `t.skip()`, `t.plan()`, `mock.fn`/`t.mock.method`, tap/tspl-style `t.equal`, `test/**`, `test-*.js` | `node --test <related files>` |
 | Bun | `bun:test` `expect`, `mock()`, `spyOn()`, `mock.module`, `test.if`/`skipIf`/`todo` | `bun test ./<related files>` |
 | Deno | `Deno.test` (all call shapes), `t.step`, `@std/assert`, `@std/expect`, `assertSnapshot`, `*_test.ts` | `deno test <related files>` (from the `deno.json` `test` task, or plain `deno test`) |
+| pytest, unittest | `test_*.py`, `*_test.py`, `assert`, `pytest.raises`, `self.assert*`, `Mock`/`patch`/`mocker`/`monkeypatch`, skip markers | not yet (audit only) |
 
 ## Rules
 
@@ -231,16 +288,16 @@ References the agent loads on demand: [test smell catalog](skills/honest-tests/r
 | `asserts-on-own-literal` | error | Asserting on a literal the test just built: `const p = { service: 's3' }; expect(p.service).toBe('s3')` — common in runtime "type tests" |
 | `never-failing-assertion` | error | `expect(x).toBeTruthy` (never called), bare `expect(x)`, un-awaited `.resolves`/`.rejects`, `typeof x` "defined", `length >= 0`, `{}` truthy |
 | `swallowed-assertion` | error | Assertion inside `try` whose `catch` doesn't rethrow |
-| `catch-only-assertion` | error | Assertions only in `catch` — passes when nothing throws |
-| `mocked-unit-under-test` | error | `vi.mock('./cart')` inside `cart.test.ts`; spying on and replacing the unit's own exports |
+| `catch-only-assertion` | error | Assertions only in `catch` — passes when nothing throws (warning when the test also asserts outside the `catch`) |
+| `mocked-unit-under-test` | error | `vi.mock('./cart')` inside `cart.test.ts`; spying on and replacing the unit's own exports (warning for partial mocks) |
 | `focused-test` | error | `.only`, `fit`, `fdescribe` left in |
 | `excessive-mocking` | warning | 5+ module mocks in one file |
 | `snapshot-only` | warning | The only assertion is a snapshot |
 | `conditional-assertion` | warning | Assertion behind `if` / `&&` / ternary |
 | `reimplemented-algorithm` | warning | Expected value recomputed from the call's own inputs: `expect(total(p, q)).toBe(p * q * 1.2)` |
 | `oracle-copied-from-output` | warning | Expected float carries rounding noise (`2.9000000000000004`), so it was copied from the code's output |
-| `weak-called-assertion` | info | Bare `toHaveBeenCalled()` on a shared mock whose arguments other tests check (warning when the test checks nothing else) |
 | `skipped-test` | warning | `.skip`, `xit`, `xdescribe` |
+| `weak-called-assertion` | info | Bare `toHaveBeenCalled()` on a shared mock whose arguments other tests check (warning when the test checks nothing else) |
 
 Every rule except `reimplemented-algorithm`, `oracle-copied-from-output` and `weak-called-assertion`
 (JS/TS only for now) also runs on **pytest** files (`test_*.py`, `*_test.py`): `assert` statements,
@@ -281,8 +338,10 @@ off. Deno projects without a package.json are found by their `deno.json(c)`; if 
 permissions the `test` task doesn't grant, pass `--test-cmd`. Imports through path aliases (`@/lib/x`)
 aren't followed yet; pass `--test-cmd` if your tests reach the target that way.
 
+Mutation testing covers JS/TS source files (any of the runners above); Python is next.
+
 **Fast:** mutants run in parallel, each worker in its own copy (default: half the cores, at most 4;
-26 mutants in ~4s on the fixture instead of ~9s). Before trusting parallel runs, the baseline runs in
+the fixture's 26 mutants take ~4s with 4 workers instead of ~10s with one, on a 12-core laptop). Before trusting parallel runs, the baseline runs in
 every copy at once; if that fails (fixed ports, a shared database), it falls back to one worker, so a
 suite that isn't parallel-safe can't inflate the score. With 2+ related test files, a **coverage map**
 runs each test file once against a probed copy of the target, and each mutant then runs only the test
@@ -301,7 +360,7 @@ files that execute its statement; mutants no test executes are reported without 
 honest-tests audit [paths...]   [--json | --sarif] [-v] [--ignore <glob>] [--rule <id>] [--disable <id>]
                                 [--changed <ref>] [--fail-on error|warning|never] [--mutate <file> ...]
 honest-tests mutate <file>      [--json | --sarif] [--test-cmd <cmd>] [--max-mutants <n>] [--min-score <n>]
-                                [--concurrency <n>] [--coverage-map auto|on|off]
+                                [--timeout <ms>] [--root <dir>] [--concurrency <n>] [--coverage-map auto|on|off]
 honest-tests rules              [--json]
 honest-tests init <claude|codex|cursor> [--dir <repo>]
 ```
@@ -313,20 +372,19 @@ Exit codes: `0` clean, `1` findings at/above `--fail-on` (default `error`) or sc
 ## Dogfooding
 
 honest-tests audits its own suite in CI (`npm run dogfood` → zero findings) and mutation-checks its own
-rules. While building v1, `mutate src/rules/asserts-on-mock.ts` scored **50%** against our first rule
+rules. While building v0.1, `mutate src/rules/asserts-on-mock.ts` scored **50%** against our first rule
 tests — the tool found the gaps in the tests for the tool. After adding the missing negative cases it's
 at 84%, and `never-failing-assertion.ts` is at 100%; the remaining survivors are near-equivalent mutants
 such as early-exit optimizations.
 
 ## Roadmap
 
-- [x] **pytest adapter** — audit pytest/unittest files with the rule engine ([src/adapters/python](src/adapters/python/index.ts)); Python mutation testing and the three newest rules for Python are next
-- [x] Parallel mutant runs and per-test coverage mapping (run only tests that execute the mutated line)
-- [x] SARIF output for GitHub code scanning; `--changed` mode for PR diffs
-- [x] More rules: oracle copied from output, re-implemented algorithm in test, weak `toHaveBeenCalled()`
-- [x] Mocha, node:test, Bun, Deno
 - [ ] Go and Rust adapters
-- [x] GitHub Action with a PR comment: "this PR adds 12 tests, 4 can't fail"
+- [ ] Mutation testing for Python files
+- [ ] `reimplemented-algorithm`, `oracle-copied-from-output` and `weak-called-assertion` for Python
+- [ ] Per-test-case coverage mapping (today the map is per test file)
+
+Shipped features are in the [CHANGELOG](CHANGELOG.md).
 
 ## Contributing
 

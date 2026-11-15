@@ -83,12 +83,13 @@ runs:
         node-version: 24
 
     # Build honest-tests from this action's own checkout, so the CLI always matches the action's ref.
-    # Install scripts are skipped; only our own build (tsc) runs.
+    # Install scripts are skipped; only our own build (tsc) runs. --include=dev keeps TypeScript even
+    # when the calling workflow sets NODE_ENV=production.
     - name: Build honest-tests
       shell: bash
       working-directory: ${{ github.action_path }}
       run: |
-        npm ci --no-audit --no-fund --ignore-scripts --loglevel=error
+        npm ci --include=dev --no-audit --no-fund --ignore-scripts --loglevel=error
         npm run build --silent
 
     # Static analysis only: test files are parsed, never executed.

@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Agent skill that stops AI coding agents from writing fake tests",
-    "version": "0.1.2"
+    "version": "0.2.0"
   },
   "plugins": [
     {

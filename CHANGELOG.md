@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-15
+
 ### Added
 
 - **`--sarif`**: SARIF 2.1.0 output for GitHub code scanning (`github/codeql-action/upload-sarif`).
@@ -17,7 +19,8 @@ All notable changes to this project are documented here. The format follows
 - **GitHub Action "Honest Tests Audit"** (`action.yml`): audits the test files a pull request changes
   and creates or updates one PR comment ("This PR adds 12 tests — 4 can't fail."), writes the job
   summary, annotates findings, optionally writes SARIF, and fails on findings in added or modified
-  tests (`fail-on`). Static only: it never runs the repository's code. Usage in `examples/`.
+  tests (`fail-on`). Static only: it never runs the repository's code. Use it as
+  `mintwork/honest-tests@v0`; each release moves the `v0` tag. Usage in `examples/`.
 - Three new rules, tuned for precision on real projects (they miss cases rather than cry wolf):
   - `reimplemented-algorithm` (warning): the expected value is numeric arithmetic over the call's own
     inputs, e.g. `expect(total(p, q)).toBe(p * q * 1.2)`.
@@ -121,6 +124,8 @@ First public release.
   `--test-cmd` in that case.
 - Mutants run one at a time.
 
+[Unreleased]: https://github.com/mintwork/honest-tests/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mintwork/honest-tests/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/mintwork/honest-tests/releases/tag/v0.1.2
 [0.1.1]: https://github.com/mintwork/honest-tests/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mintwork/honest-tests/releases/tag/v0.1.0

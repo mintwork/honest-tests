@@ -2,9 +2,9 @@
 
 ## Phase 0 — Scope
 
-- Identify the test runner (`package.json` scripts, `vitest.config.*`, `jest.config.*`) and the test
-  directories. Confirm the suite passes as-is: `npm test`. Mutation results are meaningless on a red
-  suite.
+- Identify the test runner (`package.json` scripts, `vitest.config.*`, `jest.config.*`, `.mocharc.*`,
+  `deno.json`, `bunfig.toml`, `pytest.ini` / `pyproject.toml`) and the test directories. Confirm the
+  suite passes as-is (`npm test`, `pytest`). Mutation results are meaningless on a red suite.
 - Agree on scope with the user if the repo is large: a package, a directory, or the tests touched by a
   PR: `npx @mintwork/honest-tests audit --changed origin/main` audits only test files changed since the
   merge base (uncommitted and untracked files included) and says how many tests the change adds.
@@ -27,10 +27,10 @@ Output shape (`schemaVersion: 1`):
 {
   "schemaVersion": 1,
   "tool": "honest-tests",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "filesScanned": 3,
-  "testsScanned": 14,
-  "summary": { "error": 12, "warning": 3, "info": 0, "suspiciousTests": 10 },
+  "testsScanned": 15,
+  "summary": { "error": 13, "warning": 3, "info": 0, "suspiciousTests": 11 },
   "findings": [
     {
       "ruleId": "swallowed-assertion",

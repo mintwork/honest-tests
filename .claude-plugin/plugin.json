@@ -1,7 +1,7 @@
 {
   "name": "honest-tests",
   "displayName": "Honest Tests",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Stop AI coding agents from writing fake tests. Skill + CLI that detects tests that can't fail and proves it with mutation testing.",
   "author": {
     "name": "mintwork",
